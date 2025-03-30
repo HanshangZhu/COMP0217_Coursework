@@ -1,4 +1,4 @@
-function [X_Est, P_Est, GT] = myEKF(out)
+function [X_Est, P_Est, GT] = myEKF(out, bias, T)
 % MYEKF Extended Kalman Filter for 2D position and orientation estimation using IMU and ToF
 
 % ------------------ Extract Sensor Data ------------------ %
@@ -19,14 +19,28 @@ timeVec = timeVec(1:N);
 
 % ------------------ Frame Convention ------------------ %
 % Separate rotation matrices for accelerometer/magnetometer and gyroscope
-Rwb_accel = [0 1 0; 0 0 1; -1 0 0];
-Rwb_gyro  = [0 1 0; 0 0 1; 1 0 0];
+Rwb_accel = [0 1 0; 
+             0 0 1; 
+            -1 0 0];
+
+Rwb_mag  = [0 1 0; 
+            0 0 -1; 
+            1 0 0];
+
+
 
 accel_corrected = (Rwb_accel * accel')';
-gyro_corrected  = (Rwb_gyro * gyro')';
-mag_corrected   = (Rwb_accel * mag')';
+gyro_corrected  = (Rwb_accel * gyro')';
+mag_calibrated = (mag - bias') * T;
 
-% ------------------ Initialization ------------------ %
+% Scale to match Earth's field magnitude (~48µT in London)
+H_ref = 48e-6;
+
+mag_calibrated = H_ref * (mag_calibrated ./ vecnorm(mag_calibrated, 2, 2));
+
+mag_corrected = (Rwb_mag * mag_calibrated')';  % Rotate to world frame
+
+% ------------------ Initialisation ------------------ %
 X_Est = zeros(N, 6); % [x y vx vy psi dpsi]
 P_Est = cell(N,1);
 GT = pos;

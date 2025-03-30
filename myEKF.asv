@@ -2,37 +2,38 @@ function [X_Est, P_Est, GT] = myEKF(out)
 % MYEKF Extended Kalman Filter for 2D position and orientation estimation using IMU and ToF
 
 % ------------------ Extract Sensor Data ------------------ %
-accel = out.Sensor_ACCEL;
-gyro  = out.Sensor_GYRO;
-mag   = out.Sensor_MAG;
-tof1  = out.Sensor_ToF1;
-tof2  = out.Sensor_ToF2;
-tof3  = out.Sensor_ToF3;
+accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
+gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
+mag   = squeeze(permute(out.Sensor_MAG.signals.values, [3, 2, 1]));
+tof1  = squeeze(out.Sensor_ToF1.signals.values(:,1,:));
+tof2  = squeeze(out.Sensor_ToF2.signals.values(:,1,:));
+tof3  = squeeze(out.Sensor_ToF3.signals.values(:,1,:));
 pos   = out.GT_position.signals.values;
 rot   = out.GT_rotation.signals.values;
-timeVec = out.Time;
+timeVec = out.GT_position.time;
 
 N = min([size(accel,1), size(gyro,1), size(mag,1), size(tof1,1), size(timeVec,1)]);
-accel = accel(1:N,:);
-gyro  = gyro(1:N,:);
-mag   = mag(1:N,:);
-tof1  = tof1(1:N);
-tof2  = tof2(1:N);
-tof3  = tof3(1:N);
 pos   = pos(1:N,:);
 rot   = rot(1:N,:);
 timeVec = timeVec(1:N);
 
 % ------------------ Frame Convention ------------------ %
 % Separate rotation matrices for accelerometer/magnetometer and gyroscope
-Rwb_accel = [0 1 0; 0 0 1; -1 0 0]
-Rwb_gyro  = [0 1 0; 0 0 1; 1 0 0];
+Rwb_accel = [0 1 0; 
+             0 0 1; 
+            -1 0 0];
+
+Rwb_mag  = [0 1 0; 
+            0 0 -1; 
+            1 0 0];
+
+
 
 accel_corrected = (Rwb_accel * accel')';
-gyro_corrected  = (Rwb_gyro * gyro')';
-mag_corrected   = (Rwb_accel * mag')';
+gyro_corrected  = (Rwb_accel * gyro')';
+mag_corrected   = (Rwb_mag * mag')';
 
-% ------------------ Initialization ------------------ %
+% ------------------ Initialisation ------------------ %
 X_Est = zeros(N, 6); % [x y vx vy psi dpsi]
 P_Est = cell(N,1);
 GT = pos;
