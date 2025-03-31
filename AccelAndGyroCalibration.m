@@ -12,7 +12,7 @@ accel = squeeze(permute(AccelGyroCalib.out.Sensor_ACCEL.signals.values, [3, 2, 1
 gyro  = squeeze(permute(AccelGyroCalib.out.Sensor_GYRO.signals.values, [3, 2, 1]));
 t = AccelGyroCalib.out.Sensor_ACCEL.time;
 
-% Calib1 time
+% Calib1 (rotate) time
 t_mag = MagCalib.out.Sensor_MAG.time;
 
 
@@ -22,7 +22,10 @@ accel2 = squeeze(permute(AccelGyroCalib.out.Sensor_LP_ACCEL.signals.values, [3, 
 % Extract Magnetometer Data (rotation)
 mag = squeeze(permute(MagCalib.out.Sensor_MAG.signals.values, [3, 2, 1]));
 
+
 % Do same for still data
+mag_still = squeeze(permute(AccelGyroCalib.out.Sensor_MAG.signals.values, [3, 2, 1]));
+
 
 
 % Extract TOF data
@@ -62,10 +65,10 @@ gyro_bias = mean(gyro_corrected);
 
 accel2_bias = mean(accel2_corrected);
 
-R_accel = std(accel_corrected);
-R_gyro = std(gyro_corrected);
+R_accel = cov(accel_corrected);
+R_gyro = cov(gyro_corrected);
 
-R_accel2 = std(accel2_corrected);
+R_accel2 = cov(accel2_corrected);
 
 % Perform magnetometer calibration
 [A_mag, b_mag, ~] = magcal(mag_corrected);
@@ -77,33 +80,34 @@ mag_corrected = (mag_corrected - b_mag) * A_mag;
 
 
 % Use Magnetometer from static data to find std / covariance
+R_mag = cov(mag_still);
 
 
 
 
 % Plot results
-% figure(1)
-% plot(t, accel_corrected)
-% title('Accelerometer Information')
-% xlabel('Time (s)')
-% ylabel('Acceleration (m/s^2)')
-% legend('X', 'Y', 'Z')
-% grid on
+figure(1)
+plot(t, accel_corrected)
+title('Accelerometer Information')
+xlabel('Time (s)')
+ylabel('Acceleration (m/s^2)')
+legend('X', 'Y', 'Z')
+grid on
 
-% figure(2)
-% plot(t, gyro_corrected);
-% title('Gyroscope Data');
-% xlabel('Time (s)');
-% ylabel('Angular Velocity (rad/s)');
-% legend('X (Roll)', 'Y (Pitch)', 'Z (Yaw)');
+figure(2)
+plot(t, gyro_corrected);
+title('Gyroscope Data');
+xlabel('Time (s)');
+ylabel('Angular Velocity (rad/s)');
+legend('X (Roll)', 'Y (Pitch)', 'Z (Yaw)');
  
-% figure(3)
-% plot(t, accel2_corrected)
-% title('Accelerometer 2 Information')
-% xlabel('Time (s)')
-% ylabel('Acceleration (m/s^2)')
-% legend('X', 'Y', 'Z')
-% grid on
+figure(3)
+plot(t, accel2_corrected)
+title('Accelerometer 2 Information')
+xlabel('Time (s)')
+ylabel('Acceleration (m/s^2)')
+legend('X', 'Y', 'Z')
+grid on
 
 figure;
 plot(t_mag, mag_corrected);
