@@ -16,13 +16,23 @@ function [X_Est, P_Est, GT] = myEKF(out)
     pos = pos(1:N,:);
     timeVec = timeVec(1:N);
     GT = pos; % ground truth position
+
+    %% Frame Convention
+
+    accel = (Rotw_a * accel')'
+    gyro = (Rotw_a * gyro')'
+    mag = (Rotw_mag * mag')'
+
+    %% TODO: Accel2 load and calibration
+
+
     
-    %% Sensor Calibration: Magnetometer
+    %% Sensor Calibration
     % Rotate and scale magnetometer to align with world frame and normalize strength
-    Rwb_accel = [0 1 0; 0 0 1; -1 0 0];
-    H_ref = 48e-6;
-    mag_calibrated = H_ref * (mag_calibrated ./ vecnorm(mag_calibrated, 2, 2));
-    mag_corrected = (Rwb_accel * mag_calibrated')';
+    accel = accel - accel_bias
+    gyro = gyro -gyro_bias
+    mag = (mag - b_mag) * A_mag
+
 
     %% EKF Initialization
     % Define initial state: [x y vx vy psi dpsi gyro_bias accel_bias]
