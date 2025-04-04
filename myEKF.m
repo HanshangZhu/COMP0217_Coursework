@@ -9,6 +9,7 @@ function [X_Est, P_Est, GT] = myEKF(out)
     tof_right = squeeze(out.Sensor_ToF3.signals.values(:,1,:));
     pos   = out.GT_position.signals.values;
     timeVec = out.GT_position.time;
+    sensor_calibration = load("sensor_calibration.mat");
 
     %% Time Alignment and Truncation
     % Ensure all sensor signals are aligned in time and have consistent length
@@ -19,9 +20,9 @@ function [X_Est, P_Est, GT] = myEKF(out)
 
     %% Frame Convention
 
-    accel = (Rotw_a * accel')'
-    gyro = (Rotw_a * gyro')'
-    mag = (Rotw_mag * mag')'
+    accel = (sensor_calibration.Rotw_a * accel')';
+    gyro = (sensor_calibration.Rotw_a * gyro')';
+    mag = (sensor_calibration.Rotw_mag * mag')';
 
     %% TODO: Accel2 load and calibration
 
@@ -29,9 +30,9 @@ function [X_Est, P_Est, GT] = myEKF(out)
     
     %% Sensor Calibration
     % Rotate and scale magnetometer to align with world frame and normalize strength
-    accel = accel - accel_bias
-    gyro = gyro -gyro_bias
-    mag = (mag - b_mag) * A_mag
+    accel = accel - sensor_calibration.accel_bias;
+    gyro = gyro - sensor_calibration.gyro_bias;
+    mag = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
 
 
     %% EKF Initialization
