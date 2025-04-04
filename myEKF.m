@@ -56,7 +56,7 @@ function [X_Est, P_Est, GT] = myEKF(out)
         [x_pred, F] = predictionStepSymbolic(xk, accel(k,:), gyro(k,:), dt);
 
         % Measurement Step: Uses optimization to estimate position (x, y) from ToF sensors
-        [z_meas, H] = measurementModelOptim(x_pred, mag_corrected(k,:), tof_front(k), tof_left(k), tof_right(k));
+        [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), tof_front(k), tof_left(k), tof_right(k));
 
         % Kalman Filter Update
         [x_upd, P_upd] = updateStep(x_pred, P_Est{k}, z_meas, H, R);
@@ -66,36 +66,18 @@ function [X_Est, P_Est, GT] = myEKF(out)
 end
 
 function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
-    %% Symbolic Constant Acceleration Prediction Model with Analytical Jacobian
-    % Declare symbolic variables for state and intermediate terms
-    persistent F_template
-    if isempty(F_template)
-        syms x y vx vy psi dpsi gyro_bias accel_bias dt af gy real
-        c = cos(psi); s = sin(psi);
-        
-        % Prediction model equations
-        f1 = x + vx*dt + 0.5*c*af*dt^2;
-        f2 = y + vy*dt + 0.5*s*af*dt^2;
-        f3 = vx + c*af*dt;
-        f4 = vy + s*af*dt;
-        f5 = psi + dpsi*dt;
-        f6 = gy;
-        f7 = gyro_bias;
-        f8 = accel_bias;
-        
-        f = [f1; f2; f3; f4; f5; f6; f7; f8];
-        X = [x; y; vx; vy; psi; dpsi; gyro_bias; accel_bias];
-        F_template = matlabFunction(jacobian(f, X), 'Vars', {x, y, vx, vy, psi, dpsi, gyro_bias, accel_bias, dt, af});
-    end
+    % EKF prediction using manually exported Jacobian from jacobian_prediction.m
 
-    % Evaluate numerical state
+    % Unpack state
     x = xk(1); y = xk(2); vx = xk(3); vy = xk(4);
     psi = xk(5); dpsi = xk(6); gb = xk(7); ab = xk(8);
+
+    % IMU measurements (compensated)
     af = accel(3) - ab;
     gy = gyro(3) - gb;
     c = cos(psi); s = sin(psi);
 
-    % Compute predicted state using manually written expressions
+    % State prediction
     x_pred = zeros(8,1);
     x_pred(1) = x + vx*dt + 0.5*c*af*dt^2;
     x_pred(2) = y + vy*dt + 0.5*s*af*dt^2;
@@ -106,9 +88,10 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     x_pred(7) = gb;
     x_pred(8) = ab;
 
-    % Evaluate symbolic Jacobian with current state
-    F = F_template(x, y, vx, vy, psi, dpsi, gb, ab, dt, af);
+    % Analytical Jacobian from external file
+    F = jacobian_prediction(x, y, vx, vy, psi, dpsi, gb, ab, dt, af);
 end
+
 
 function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
     %% Measurement model using ToF sensor triangulation by optimization
