@@ -16,7 +16,7 @@ function [X_Est, P_Est, GT] = myEKF(out, bias, T)
     pos = pos(1:N,:);
     timeVec = timeVec(1:N);
     GT = pos; % ground truth position
-
+    
     %% Sensor Calibration: Magnetometer
     % Rotate and scale magnetometer to align with world frame and normalize strength
     Rwb_accel = [0 1 0; 0 0 1; -1 0 0];
