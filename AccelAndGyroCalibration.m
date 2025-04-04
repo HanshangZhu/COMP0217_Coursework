@@ -35,24 +35,24 @@ tof_right = squeeze(AccelGyroCalib.out.Sensor_ToF3.signals.values(:,1,:));
 
 
 % Define rotation matrices
-Rwa = [0 1 0;
+Rotw_a = [0 1 0;
        0 0 1;
       -1 0 0]; % Accelerometer / Gyro
 
-Rwa2 = [1 0 0;
+Rotw_a2 = [1 0 0;
         0 0 -1;
         0 1 0]; % Accelerometer 2
 
-Rwmag = [0 1 0;
+Rotw_mag = [0 1 0;
          0 0 1;
          1 0 0]; % Magnetometer
 
-accel_corrected = (Rwa * accel')'; 
-gyro_corrected = (Rwa * gyro')';
+accel_corrected = (Rotw_a * accel')'; 
+gyro_corrected = (Rotw_a * gyro')';
 
-accel2_corrected = (Rwa2 * accel2')';
+accel2_corrected = (Rotw_a2 * accel2')';
 
-mag_corrected = (Rwmag * mag')';
+mag_corrected = (Rotw_mag * mag')';
 
 
 % Filter data where t < 60
@@ -172,4 +172,4 @@ disp(b_mag);
 % Save to .mat file
 save('sensor_calibration.mat', 'R_accel', 'R_gyro', 'R_accel2', 'R_mag', ...
     'accel_bias', 'gyro_bias', 'accel2_bias', 'b_mag', ...
-    'R_tof_left', 'R_tof_middle', 'R_tof_right');
+    'R_tof_left', 'R_tof_middle', 'R_tof_right','Rotw_mag','Rotw_a','Rotw_a2');
