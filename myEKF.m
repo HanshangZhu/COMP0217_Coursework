@@ -32,7 +32,7 @@ function [X_Est, P_Est, GT] = myEKF(out)
     X_Est(1,:) = [ pos(1,1:2), 0, 0, 0, 0, 0, 0 ];
     P_Est{1} = diag([0.01, 0.01, 0.1, 0.1, 0.01, 0.01, 0.001, 0.001]);
     Q = diag([1e-6, 1e-6, 1e-3, 1e-3, 1e-6, 1e-3, 1e-8, 1e-8]);
-    R = diag([sensor_calibration.R_psi, sensor_calibration.R_tof_left, sensor_calibration.R_tof_middle, sensor_calibration.R_tof_right]);
+    R = diag([1,0.1,0.1,0.1]) * diag([sensor_calibration.R_psi, sensor_calibration.R_tof_left, sensor_calibration.R_tof_middle, sensor_calibration.R_tof_right]);
 
     %% Main EKF Loop
     for k = 1:N-1
@@ -160,3 +160,40 @@ function [t, branch, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta)
     end
     dt_dpsi = dt_dtheta;
 end
+
+function F = jacobian_prediction(x, y, vx, vy, psi, dpsi, gb, ab, dt, af)
+    % Auto-generated analytical Jacobian function for EKF prediction model
+    % Inputs:
+    %   x, y, vx, vy, psi, dpsi, gb, ab, dt, af
+    % Outputs:
+    %   F - 8x8 Jacobian matrix of the prediction model
+    c = cos(psi);
+    s = sin(psi);
+
+    F = eye(8);
+
+    % Partial derivatives for x position
+    F(1,3) = dt;
+    F(1,5) = -0.5 * s * af * dt^2;
+    F(1,8) = -0.5 * c * dt^2;
+
+    % Partial derivatives for y position
+    F(2,4) = dt;
+    F(2,5) =  0.5 * c * af * dt^2;
+    F(2,8) = -0.5 * s * dt^2;
+
+    % Partial derivatives for vx
+    F(3,5) = -s * af * dt;
+    F(3,8) = -c * dt;
+
+    % Partial derivatives for vy
+    F(4,5) =  c * af * dt;
+    F(4,8) = -s * dt;
+
+    % Partial for psi
+    F(5,6) = dt;
+
+    % Partial for dpsi (gy = gyro(3) - gb)
+    F(6,7) = -1;
+end
+
