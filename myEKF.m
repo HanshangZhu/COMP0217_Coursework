@@ -6,140 +6,248 @@ function [X_Est, P_Est, GT] = myEKF(out)
     tof_front = squeeze(out.Sensor_ToF2.signals.values(:,1,:));
     tof_left  = squeeze(out.Sensor_ToF3.signals.values(:,1,:));
     tof_right = squeeze(out.Sensor_ToF1.signals.values(:,1,:));
-    pos   = out.GT_position.signals.values;
-    timeVec = out.GT_position.time;
+
+    pos      = out.GT_position.signals.values;    % Nx3 ground truth
+    rotQuat  = out.GT_rotation.signals.values;    % Nx4 (quaternions)
+    timeVec  = out.GT_position.time;              % we’ll assume all the same length
+
     sensor_calibration = load("sensor_calibration.mat");
 
-    %% Time Alignment and Truncation
-    N = min([size(accel,1), size(gyro,1), size(mag,1), length(tof_front), length(timeVec)]);
-    pos = pos(1:N,:);
-    timeVec = timeVec(1:N);
-    GT = pos;
+    %% Assume everything is the same length (no time alignment/truncation)
+    N = length(pos);  % or size(pos,1)
+
+    % If your data is truly all same length, no need to truncate
+    % accel, gyro, mag, etc. must be length N as well
+
+    GT = pos;  % Just store ground-truth positions for reference
 
     %% Frame Convention
     accel = (sensor_calibration.Rotw_a * accel')';
-    gyro = (sensor_calibration.Rotw_a * gyro')';
-    mag = (sensor_calibration.Rotw_mag * mag')';
+    gyro  = (sensor_calibration.Rotw_a * gyro')';
+    mag   = (sensor_calibration.Rotw_mag * mag')';
 
     %% Sensor Calibration
     accel = accel - sensor_calibration.accel_bias;
-    gyro = gyro - sensor_calibration.gyro_bias;
-    mag = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
+    gyro  = gyro  - sensor_calibration.gyro_bias;
+    mag   = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
 
-    %% EKF Initialization
-    X_Est = zeros(N, 8);
+    %% Convert GT quaternion to Euler angles
+    eulAngles = quat2eul(rotQuat);  % [roll, pitch, yaw] in ZYX by default
+    yawGT     = eulAngles(:,3);
+
+    %% EKF Initialization (6D)
+    % State = [ x, y, vx, vy, psi, dpsi ]
+    X_Est = zeros(N, 6);
     P_Est = cell(N,1);
-    X_Est(1,:) = [ pos(1,1:2), 0, 0, 0, 0, 0, 0 ];
-    P_Est{1} = diag([0.01, 0.01, 0.1, 0.1, 0.01, 0.01, 0.001, 0.001]);
-    Q = diag([1e-6, 1e-6, 1e-3, 1e-3, 1e-6, 1e-3, 1e-8, 1e-8]);
-    R = diag([1,0.1,0.1,0.1]) * diag([sensor_calibration.R_psi, sensor_calibration.R_tof_left, sensor_calibration.R_tof_middle, sensor_calibration.R_tof_right]);
+
+    % Use GT for initial position and yaw, zero velocity
+    x0   = pos(1,1);
+    y0   = pos(1,2);
+    psi0 = yawGT(1);
+    X_Est(1,:) = [ x0, y0, 0, 0, 0.5, 0 ];
+
+    % Give minimal uncertainty (adjust if needed)
+    P_Est{1} = diag([0.01, 0.01, 0.05, 0.05, 0.01, 0.05]);
+
+    % Process noise Q
+    Q = diag([1e-6, 1e-6, 1e-3, 1e-3, 1e-5, 1e-3]);
+
+    % Measurement noise R, scaled properly
+    scaleFactors = [1, 0.1, 0.1, 0.1];
+    Rdiag = [
+        sensor_calibration.R_psi, ...
+        sensor_calibration.R_tof_left, ...
+        sensor_calibration.R_tof_middle, ...
+        sensor_calibration.R_tof_right
+    ];
+    R = diag(scaleFactors .* Rdiag);
 
     %% Main EKF Loop
     for k = 1:N-1
+        % We'll assume the dataset uses consistent time steps
         dt = timeVec(k+1) - timeVec(k);
         if dt <= 0, dt = 1e-2; end
 
         xk = X_Est(k,:)';
         [x_pred, F] = predictionStepSymbolic(xk, accel(k,:), gyro(k,:), dt);
-        [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), tof_front(k), tof_left(k), tof_right(k));
-        [x_upd, P_upd] = updateStep(x_pred, P_Est{k}, z_meas, H, R);
 
+        % Predicted covariance
+        P_pred = F * P_Est{k} * F' + Q;
+
+        % Build measurement
+        [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), tof_front(k), tof_left(k), tof_right(k));
+
+        % Update
+        [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R);
+
+        % Store
         X_Est(k+1,:) = x_upd';
-        P_Est{k+1} = P_upd;
+        P_Est{k+1}   = P_upd;
     end
 end
 
+%% ==============================================================
 function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
-    x = xk(1); y = xk(2); vx = xk(3); vy = xk(4);
-    psi = xk(5); dpsi = xk(6); gb = xk(7); ab = xk(8);
-    af = accel(3) - ab;
-    gy = gyro(3) - gb;
-    c = cos(psi); s = sin(psi);
+    % xk(1) = x, xk(2) = y
+    % xk(3) = vx, xk(4) = vy
+    % xk(5) = psi, xk(6) = dpsi
+    x   = xk(1);
+    y   = xk(2);
+    vx  = xk(3);
+    vy  = xk(4);
+    psi = xk(5);
+    dpsi= xk(6);
 
-    x_pred = zeros(8,1);
+    % We'll assume accel(3) is forward acceleration in your chosen frame
+    af  = accel(3);
+    gyZ = gyro(3);
+
+    c = cos(psi);
+    s = sin(psi);
+
+    x_pred = zeros(6,1);
+
+    % x position
     x_pred(1) = x + vx*dt + 0.5*c*af*dt^2;
+    % y position
     x_pred(2) = y + vy*dt + 0.5*s*af*dt^2;
+    % vx
     x_pred(3) = vx + c*af*dt;
+    % vy
     x_pred(4) = vy + s*af*dt;
+    % psi
     x_pred(5) = psi + dpsi*dt;
-    x_pred(6) = gy;
-    x_pred(7) = gb;
-    x_pred(8) = ab;
+    % dpsi
+    x_pred(6) = gyZ;  % new yaw rate from the gyro
 
-    F = jacobian_prediction(x, y, vx, vy, psi, dpsi, gb, ab, dt, af);
+    % Jacobian (6x6)
+    F = eye(6);
+
+    % partial x wrt vx
+    F(1,3) = dt;
+    % partial x wrt psi
+    F(1,5) = -0.5*s*af*dt^2;
+
+    % partial y wrt vy
+    F(2,4) = dt;
+    F(2,5) =  0.5*c*af*dt^2;
+
+    % partial vx wrt psi
+    F(3,5) = -s*af*dt;
+
+    % partial vy wrt psi
+    F(4,5) =  c*af*dt;
+
+    % partial psi wrt dpsi
+    F(5,6) = dt;
+
+    % dpsi wrt states is 0 in this model (using direct assignment from gyroZ)
 end
 
+%% ==============================================================
 function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
+    % We measure yaw from magnetometer plus 3 ToF distances
+    psi_meas = atan2(mag(2), mag(1));
+
+    % Build z_meas
+    z_meas = [psi_meas; d1; d2; d3];
+
+    % Predicted yaw = x_pred(5)
     psi = x_pred(5);
-    psi_meas = atan2(mag(1), mag(3));
-    x = x_pred(1); y = x_pred(2);
+    x   = x_pred(1);
+    y   = x_pred(2);
 
     offsets = [0, pi/2, -pi/2];
-    angles = psi + offsets;
+    angles  = psi + offsets;
+
+    % We'll compute partial derivatives for ToF
     d_pred = zeros(3,1);
-    H = zeros(4,8);
+    H = zeros(4,6);  % 4 measurements, 6 states
 
     for i = 1:3
         theta = angles(i);
         [t, ~, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta);
         d_pred(i) = t;
-        H(i+1,1) = dt_dx;
-        H(i+1,2) = dt_dy;
-        H(i+1,5) = dt_dpsi;
+        row = i+1;  % rows 2..4 in z_meas
+        H(row,1) = dt_dx;     % partial wrt x
+        H(row,2) = dt_dy;     % partial wrt y
+        H(row,5) = dt_dpsi;   % partial wrt psi
     end
 
-    z_meas = [psi_meas; d1; d2; d3];
+    % row 1 = yaw partial
+    % yaw_meas depends only on psi => partial(psi_meas)/partial(psi_est) = 1
     H(1,5) = 1;
 end
 
+%% ==============================================================
 function [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R)
-    psi = x_pred(5);
-    x = x_pred(1);
-    y = x_pred(2);
+    % Predicted measurement
+    psi_est = x_pred(5);
+    x_est   = x_pred(1);
+    y_est   = x_pred(2);
+
     offsets = [0, pi/2, -pi/2];
-    angles = psi + offsets;
-    d_pred = zeros(3,1);
+    angles  = psi_est + offsets;
+    d_pred  = zeros(3,1);
 
     for i = 1:3
-        d_pred(i) = rayBoxIntersection(x, y, angles(i));
+        d_pred(i) = rayBoxIntersection(x_est, y_est, angles(i));
     end
 
-    z_pred = [psi; d_pred];
+    z_pred = [psi_est; d_pred];
+
+    % innovation
     y_tilde = z_meas - z_pred;
+
+    % wrap yaw difference
+    y_tilde(1) = wrapToPi(y_tilde(1));
+
+    % Compute Kalman gain
     S = H * P_pred * H' + R;
     K = P_pred * H' / S;
+
+    % update state
     x_upd = x_pred + K * y_tilde;
-    P_upd = (eye(length(x_pred)) - K * H) * P_pred;
+    % wrap final yaw
+    x_upd(5) = wrapToPi(x_upd(5));
+
+    % update covariance
+    I = eye(length(x_pred));
+    P_upd = (I - K * H) * P_pred;
 end
 
+%% ==============================================================
 function [t, branch, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta)
-    x_left = -1.2; x_right = 1.2;
-    y_bottom = -1.2; y_top = 1.2;
+    x_left   = -1.2; x_right = 1.2;
+    y_bottom = -1.2; y_top   = 1.2;
 
-    if cos(theta) > 0
+    cth = cos(theta);
+    sth = sin(theta);
+
+    if cth > 0
         x_wall = x_right;
-    elseif cos(theta) < 0
+    elseif cth < 0
         x_wall = x_left;
     else
         x_wall = NaN;
     end
 
-    if ~isnan(x_wall) && abs(cos(theta)) > 1e-6
-        t_v = (x_wall - x) / cos(theta);
+    if ~isnan(x_wall) && abs(cth) > 1e-6
+        t_v = (x_wall - x) / cth;
     else
         t_v = inf;
     end
 
-    if sin(theta) > 0
+    if sth > 0
         y_wall = y_top;
-    elseif sin(theta) < 0
+    elseif sth < 0
         y_wall = y_bottom;
     else
         y_wall = NaN;
     end
 
-    if ~isnan(y_wall) && abs(sin(theta)) > 1e-6
-        t_h = (y_wall - y) / sin(theta);
+    if ~isnan(y_wall) && abs(sth) > 1e-6
+        t_h = (y_wall - y) / sth;
     else
         t_h = inf;
     end
@@ -148,52 +256,17 @@ function [t, branch, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta)
     if t_h <= 0, t_h = inf; end
 
     if t_v < t_h
-        t = t_v; branch = 1;
-        dt_dx = -1 / cos(theta);
+        t     = t_v;
+        branch= 1;
+        dt_dx = -1/cth;
         dt_dy = 0;
-        dt_dtheta = (x_wall - x) * sin(theta) / cos(theta)^2;
+        dt_dtheta = (x_wall - x) * sth / (cth^2);
     else
-        t = t_h; branch = 2;
+        t     = t_h;
+        branch= 2;
         dt_dx = 0;
-        dt_dy = -1 / sin(theta);
-        dt_dtheta = - (y_wall - y) * cos(theta) / sin(theta)^2;
+        dt_dy = -1/sth;
+        dt_dtheta = - (y_wall - y) * cth / (sth^2);
     end
     dt_dpsi = dt_dtheta;
 end
-
-function F = jacobian_prediction(x, y, vx, vy, psi, dpsi, gb, ab, dt, af)
-    % Auto-generated analytical Jacobian function for EKF prediction model
-    % Inputs:
-    %   x, y, vx, vy, psi, dpsi, gb, ab, dt, af
-    % Outputs:
-    %   F - 8x8 Jacobian matrix of the prediction model
-    c = cos(psi);
-    s = sin(psi);
-
-    F = eye(8);
-
-    % Partial derivatives for x position
-    F(1,3) = dt;
-    F(1,5) = -0.5 * s * af * dt^2;
-    F(1,8) = -0.5 * c * dt^2;
-
-    % Partial derivatives for y position
-    F(2,4) = dt;
-    F(2,5) =  0.5 * c * af * dt^2;
-    F(2,8) = -0.5 * s * dt^2;
-
-    % Partial derivatives for vx
-    F(3,5) = -s * af * dt;
-    F(3,8) = -c * dt;
-
-    % Partial derivatives for vy
-    F(4,5) =  c * af * dt;
-    F(4,8) = -s * dt;
-
-    % Partial for psi
-    F(5,6) = dt;
-
-    % Partial for dpsi (gy = gyro(3) - gb)
-    F(6,7) = -1;
-end
-
