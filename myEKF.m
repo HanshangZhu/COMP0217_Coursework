@@ -4,8 +4,11 @@ function [X_Est, P_Est, GT] = myEKF(out)
     gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
     mag   = squeeze(permute(out.Sensor_MAG.signals.values, [3, 2, 1]));
     tof_front = squeeze(out.Sensor_ToF2.signals.values(:,1,:));
+    tof_front_status = squeeze(out.Sensor_ToF2.signals.values(:,4,:));
     tof_left  = squeeze(out.Sensor_ToF3.signals.values(:,1,:));
+    tof_left_status = squeeze(out.Sensor_ToF3.signals.values(:,4,:));
     tof_right = squeeze(out.Sensor_ToF1.signals.values(:,1,:));
+    tof_right_status = squeeze(out.Sensor_ToF1.signals.values(:,4,:));
 
     pos      = out.GT_position.signals.values;    % Nx3 ground truth
     rotQuat  = out.GT_rotation.signals.values;    % Nx4 (quaternions)
@@ -43,8 +46,8 @@ function [X_Est, P_Est, GT] = myEKF(out)
     % Use GT for initial position and yaw, zero velocity
     x0   = pos(1,1);
     y0   = pos(1,2);
-    psi0 = yawGT(1);
-    X_Est(1,:) = [ x0, y0, 0, 0, 0.5, 0 ];
+    psi0 = yawGT(2);
+    X_Est(1,:) = [ x0, y0, 0, 0, psi0, 0 ];
 
     % Give minimal uncertainty (adjust if needed)
     P_Est{1} = diag([0.01, 0.01, 0.05, 0.05, 0.01, 0.05]);
