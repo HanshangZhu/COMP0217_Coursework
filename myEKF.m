@@ -35,8 +35,8 @@ function [X_Est, P_Est, GT] = myEKF(out)
     mag   = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
 
     %% Convert GT quaternion to Euler angles
-    eulAngles = quat2eul(rotQuat);  % [roll, pitch, yaw] in ZYX by default
-    yawGT     = eulAngles(:,3);
+    eulAngles = quat2eul(rotQuat)  % [roll, pitch, yaw] in ZYX by default
+    yawGT     = eulAngles(:,1);
 
     %% EKF Initialization (6D)
     % State = [ x, y, vx, vy, psi, dpsi ]
