@@ -3,26 +3,27 @@ function [X_Est, P_Est, GT] = myEKF(out)
     accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
     gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
     mag   = squeeze(permute(out.Sensor_MAG.signals.values, [3, 2, 1]));
-    tof_front = squeeze(out.Sensor_ToF2.signals.values(:,1,:));
+
+    % Extract ToF ranges and status flags
+    tof_front        = squeeze(out.Sensor_ToF2.signals.values(:,1,:));
     tof_front_status = squeeze(out.Sensor_ToF2.signals.values(:,4,:));
-    tof_left  = squeeze(out.Sensor_ToF3.signals.values(:,1,:));
-    tof_left_status = squeeze(out.Sensor_ToF3.signals.values(:,4,:));
-    tof_right = squeeze(out.Sensor_ToF1.signals.values(:,1,:));
+
+    tof_left         = squeeze(out.Sensor_ToF3.signals.values(:,1,:));
+    tof_left_status  = squeeze(out.Sensor_ToF3.signals.values(:,4,:));
+
+    tof_right        = squeeze(out.Sensor_ToF1.signals.values(:,1,:));
     tof_right_status = squeeze(out.Sensor_ToF1.signals.values(:,4,:));
 
-    pos      = out.GT_position.signals.values;    % Nx3 ground truth
-    rotQuat  = out.GT_rotation.signals.values;    % Nx4 (quaternions)
-    timeVec  = out.GT_position.time;              % we’ll assume all the same length
+    pos     = out.GT_position.signals.values;   % Nx3 ground truth
+    rotQuat = out.GT_rotation.signals.values;   % Nx4 quaternions
+    timeVec = out.GT_position.time;             % Nx1
 
     sensor_calibration = load("sensor_calibration.mat");
 
-    %% Assume everything is the same length (no time alignment/truncation)
-    N = length(pos);  % or size(pos,1)
+    %% Assume everything is the same length
+    N = length(pos);
 
-    % If your data is truly all same length, no need to truncate
-    % accel, gyro, mag, etc. must be length N as well
-
-    GT = pos;  % Just store ground-truth positions for reference
+    GT = pos;  % store ground-truth positions for reference
 
     %% Frame Convention
     accel = (sensor_calibration.Rotw_a * accel')';
@@ -35,8 +36,10 @@ function [X_Est, P_Est, GT] = myEKF(out)
     mag   = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
 
     %% Convert GT quaternion to Euler angles
-    eulAngles = quat2eul(rotQuat)  % [roll, pitch, yaw] in ZYX by default
-    yawGT     = eulAngles(:,1);
+    % By default, quat2eul returns [roll, pitch, yaw] in ZYX order,
+    % but you want to treat eulAngles(:,1) as yaw
+    eulAngles = quat2eul(rotQuat);  % [roll, pitch, yaw] in ZYX
+    yawGT     = eulAngles(:,1);     
 
     %% EKF Initialization (6D)
     % State = [ x, y, vx, vy, psi, dpsi ]
@@ -46,42 +49,48 @@ function [X_Est, P_Est, GT] = myEKF(out)
     % Use GT for initial position and yaw, zero velocity
     x0   = pos(1,1);
     y0   = pos(1,2);
-    psi0 = yawGT(2);
+    psi0 = yawGT(2); 
     X_Est(1,:) = [ x0, y0, 0, 0, psi0, 0 ];
-
-    % Give minimal uncertainty (adjust if needed)
-    P_Est{1} = diag([0.01, 0.01, 0.05, 0.05, 0.01, 0.05]);
+    P_Est{1}   = diag([0.01, 0.01, 0.05, 0.05, 0.001, 0.05]);
 
     % Process noise Q
     Q = diag([1e-6, 1e-6, 1e-3, 1e-3, 1e-5, 1e-3]);
 
-    % Measurement noise R, scaled properly
+    % Base measurement noise (without status scaling)
     scaleFactors = [1, 0.1, 0.1, 0.1];
-    Rdiag = [
+    RdiagBase = [
         sensor_calibration.R_psi, ...
         sensor_calibration.R_tof_left, ...
         sensor_calibration.R_tof_middle, ...
         sensor_calibration.R_tof_right
     ];
-    R = diag(scaleFactors .* Rdiag);
 
     %% Main EKF Loop
     for k = 1:N-1
-        % We'll assume the dataset uses consistent time steps
         dt = timeVec(k+1) - timeVec(k);
         if dt <= 0, dt = 1e-2; end
 
         xk = X_Est(k,:)';
-        [x_pred, F] = predictionStepSymbolic(xk, accel(k,:), gyro(k,:), dt);
 
-        % Predicted covariance
+        % Prediction
+        [x_pred, F] = predictionStepSymbolic(xk, accel(k,:), gyro(k,:), dt);
         P_pred = F * P_Est{k} * F' + Q;
 
         % Build measurement
-        [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), tof_front(k), tof_left(k), tof_right(k));
+        [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), ...
+                                            tof_front(k), tof_left(k), tof_right(k));
 
-        % Update
-        [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R);
+        %% --- Dynamically scale the ToF measurement noise ---
+        % row2 -> front, row3 -> left, row4 -> right
+        frontScale = interpretToFStatus(tof_front_status(k));
+        leftScale  = interpretToFStatus(tof_left_status(k));
+        rightScale = interpretToFStatus(tof_right_status(k));
+
+        localScales = [1, frontScale, leftScale, rightScale];
+        R_local = diag(localScales .* (scaleFactors .* RdiagBase));
+
+        % EKF Update
+        [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R_local);
 
         % Store
         X_Est(k+1,:) = x_upd';
@@ -94,6 +103,7 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     % xk(1) = x, xk(2) = y
     % xk(3) = vx, xk(4) = vy
     % xk(5) = psi, xk(6) = dpsi
+
     x   = xk(1);
     y   = xk(2);
     vx  = xk(3);
@@ -121,14 +131,13 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     % psi
     x_pred(5) = psi + dpsi*dt;
     % dpsi
-    x_pred(6) = gyZ;  % new yaw rate from the gyro
+    x_pred(6) = gyZ;
 
     % Jacobian (6x6)
     F = eye(6);
 
     % partial x wrt vx
     F(1,3) = dt;
-    % partial x wrt psi
     F(1,5) = -0.5*s*af*dt^2;
 
     % partial y wrt vy
@@ -143,8 +152,6 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
 
     % partial psi wrt dpsi
     F(5,6) = dt;
-
-    % dpsi wrt states is 0 in this model (using direct assignment from gyroZ)
 end
 
 %% ==============================================================
@@ -155,7 +162,7 @@ function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
     % Build z_meas
     z_meas = [psi_meas; d1; d2; d3];
 
-    % Predicted yaw = x_pred(5)
+    % predicted yaw = x_pred(5)
     psi = x_pred(5);
     x   = x_pred(1);
     y   = x_pred(2);
@@ -163,7 +170,6 @@ function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
     offsets = [0, pi/2, -pi/2];
     angles  = psi + offsets;
 
-    % We'll compute partial derivatives for ToF
     d_pred = zeros(3,1);
     H = zeros(4,6);  % 4 measurements, 6 states
 
@@ -171,13 +177,13 @@ function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
         theta = angles(i);
         [t, ~, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta);
         d_pred(i) = t;
-        row = i+1;  % rows 2..4 in z_meas
+        row = i + 1;  % rows 2..4 in z_meas
         H(row,1) = dt_dx;     % partial wrt x
         H(row,2) = dt_dy;     % partial wrt y
         H(row,5) = dt_dpsi;   % partial wrt psi
     end
 
-    % row 1 = yaw partial
+    % row 1 => yaw partial
     % yaw_meas depends only on psi => partial(psi_meas)/partial(psi_est) = 1
     H(1,5) = 1;
 end
@@ -272,4 +278,21 @@ function [t, branch, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta)
         dt_dtheta = - (y_wall - y) * cth / (sth^2);
     end
     dt_dpsi = dt_dtheta;
+end
+
+%% ---------------------------------------------------------------
+function scale = interpretToFStatus(statusVal)
+    % status = 0 => reading is fine
+    % status = 2 => quite unreliable
+    % status = 4 => very bad, do not trust
+    switch statusVal
+        case 0
+            scale = 1.0;
+        case 2
+            scale = 10.0;
+        case 4
+            scale = 1e6;
+        otherwise
+            scale = 10.0;  % fallback for unexpected codes
+    end
 end
