@@ -54,6 +54,8 @@ accel2_corrected = (Rotw_a2 * accel2')';
 
 mag_corrected = (Rotw_mag * mag')';
 
+mag_still_corrected = (Rotw_mag * mag_still')';
+
 
 % Filter data where t < 60
 idx = t < 60;  % Logical index where time is less than 60
@@ -93,10 +95,20 @@ R_tof_right = var(tof_right);
 
 mag_corrected = (mag_corrected - b_mag) * A_mag;
 
+mag_still_corrected = (mag_still_corrected - b_mag) * A_mag;
+
 
 % Use Magnetometer from static data to find std / covariance
 R_mag = cov(mag_still);
 
+% Extract yaw angle from static magnetometer
+psi_meas = atan2(mag_still_corrected(:,2), mag_still_corrected(:,1));  % atan2(Y, X)
+
+% Wrap to [-pi, pi] to avoid jumps
+psi_meas = wrapToPi(psi_meas);
+
+% Estimate yaw variance 
+R_psi = var(psi_meas);
 
 
 
@@ -172,4 +184,4 @@ disp(b_mag);
 % Save to .mat file
 save('sensor_calibration.mat', 'R_accel', 'R_gyro', 'R_accel2', 'R_mag', ...
     'accel_bias', 'gyro_bias', 'accel2_bias', 'b_mag', ...
-    'R_tof_left', 'R_tof_middle', 'R_tof_right','Rotw_mag','Rotw_a','Rotw_a2','A_mag','b_mag');
+    'R_tof_left', 'R_tof_middle', 'R_tof_right','Rotw_mag','Rotw_a','Rotw_a2','A_mag','b_mag', 'R_psi');

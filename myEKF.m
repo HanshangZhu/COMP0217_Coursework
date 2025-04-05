@@ -32,7 +32,7 @@ function [X_Est, P_Est, GT] = myEKF(out)
     X_Est(1,:) = [ pos(1,1:2), 0, 0, 0, 0, 0, 0 ];
     P_Est{1} = diag([0.01, 0.01, 0.1, 0.1, 0.01, 0.01, 0.001, 0.001]);
     Q = diag([1e-6, 1e-6, 1e-3, 1e-3, 1e-6, 1e-3, 1e-8, 1e-8]);
-    R = diag([(1*pi/180)^2, 0.05^2, 0.05^2, 0.05^2]);
+    R = diag([sensor_calibration.R_psi, sensor_calibration.R_tof_left, sensor_calibration.R_tof_middle, sensor_calibration.R_tof_right]);
 
     %% Main EKF Loop
     for k = 1:N-1
