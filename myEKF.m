@@ -86,15 +86,15 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
 
         % Build measurement
         [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), ...
-                                            tof_front(k), tof_left(k), tof_right(k));
+                                            tof_right(k),tof_front(k),tof_left(k));
 
         %% --- Dynamically scale the ToF measurement noise ---
-        % row2 -> front, row3 -> left, row4 -> right
+        % row2 -> right, row3 -> front, row4 -> left
         frontScale = interpretToFStatus(tof_front_status(k));
         leftScale  = interpretToFStatus(tof_left_status(k));
         rightScale = interpretToFStatus(tof_right_status(k));
 
-        localScales = [1, frontScale, leftScale, rightScale];
+        localScales = [1e20, rightScale, frontScale, leftScale]; %dont trust the magnetometer
         R_local = diag(localScales .* (scaleFactors .* RdiagBase));
 
         % EKF Update
@@ -105,6 +105,11 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
         P_Est{k+1}   = P_upd;
 
     end
+    
+    mag_yaw = (atan2(mag(:,2), mag(:,1)));
+    plot(timeVec, mag_yaw, 'r'); hold on;
+    plot(timeVec, yawGT, 'k'); legend('Magnetometer yaw', 'GT yaw');
+
 end
 
 %% ==============================================================
@@ -131,13 +136,11 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
 
 
      % If forward = +Y in world frame,
-    % and we define ψ=0 => facing up the +Y direction
-    
-    % c = cos(psi), s = sin(psi)
-    x_pred(1) = x + vx*dt + 0.5 * s * af * dt^2;  % X uses sin(psi)
-    x_pred(2) = y + vy*dt + 0.5 * c * af * dt^2;  % Y uses cos(psi)
-    x_pred(3) = vx + s * af * dt;                % vx
-    x_pred(4) = vy + c * af * dt;                % vy
+    x_pred(1) = x + vx*dt + 0.5 * cos(psi) * af * dt^2;
+    x_pred(2) = y + vy*dt + 0.5 * sin(psi) * af * dt^2;
+    x_pred(3) = vx + cos(psi) * af * dt;
+    x_pred(4) = vy + sin(psi) * af * dt;
+
     x_pred(5) = psi + dpsi*dt;                   % yaw
     x_pred(6) = gyZ;                           % yaw rate from gyro
 
@@ -146,13 +149,11 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     F = eye(6);
 
     F(1,3) = dt;
-    F(1,5) = -0.5 * c * af * dt^2;
+    F(1,5) = -0.5 * sin(psi) * af * dt^2;
+    F(2,5) =  0.5 * cos(psi) * af * dt^2;
     
-    F(2,4) = dt;
-    F(2,5) =  0.5 * s * af * dt^2;
-    
-    F(3,5) = -c * af * dt;
-    F(4,5) =  s * af * dt;
+    F(3,5) = -sin(psi) * af * dt;
+    F(4,5) =  cos(psi) * af * dt;
 
 end
 
@@ -169,7 +170,7 @@ function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
     x   = x_pred(1);
     y   = x_pred(2);
 
-    offsets = [0, pi/2, -pi/2];
+    offsets = [-pi/2, 0, pi/2];
     angles  = psi + offsets;
 
     d_pred = zeros(3,1);
@@ -197,7 +198,7 @@ function [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R)
     x_est   = x_pred(1);
     y_est   = x_pred(2);
 
-    offsets = [0, pi/2, -pi/2];
+    offsets =  [-pi/2, 0, pi/2];
     angles  = psi_est + offsets;
     d_pred  = zeros(3,1);
 
