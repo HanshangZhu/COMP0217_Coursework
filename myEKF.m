@@ -151,6 +151,15 @@ end
     legend('Magnetometer yaw', 'GT yaw');
     title('Magnetometer vs Ground Truth Yaw');
     xlabel('Time [s]'); ylabel('Yaw [rad]');
+
+     err_x = X_Est(:,1) - GT(:,1);
+        err_y = X_Est(:,2) - GT(:,2);
+        err_yaw = wrapToPi(X_Est(:,5) - GT(:,4));  % GT(:,4) is yawGT
+        
+        figure;
+        subplot(3,1,1); plot(timeVec, err_x); title('Error in x');
+        subplot(3,1,2); plot(timeVec, err_y); title('Error in y');
+        subplot(3,1,3); plot(timeVec, err_yaw); title('Error in yaw');
 end
 
 %% ==============================================================
