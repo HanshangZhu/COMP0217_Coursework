@@ -18,7 +18,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     pos     = out.GT_position.signals.values;   % Nx3 ground truth
     rotQuat = out.GT_rotation.signals.values;     % Nx4 quaternions
     timeVec = squeeze(out.GT_position.time);       % Nx1
-    
+
     sensor_calibration = load("sensor_calibration.mat");
     
     %% Assume everything is the same length
@@ -29,44 +29,55 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     accel = (sensor_calibration.Rotw_a * accel')';
     gyro  = (sensor_calibration.Rotw_a * gyro')';
     mag   = (sensor_calibration.Rotw_mag * mag')';
-    accel2 = (sensor_calibration.Rotw_a2 * accel2')';  % APPLY CORRECT ROTATION FOR SECOND ACCELEROMETER
+    accel2 = (sensor_calibration.Rotw_a2 * accel2')';  % USE CORRECT ROTATION FOR SECOND ACCELEROMETER
     
     accel = accel - sensor_calibration.accel_bias;
-    gyro  = gyro  - sensor_calibration.gyro_bias;
+    gyro  = gyro - sensor_calibration.gyro_bias;
     mag   = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
     accel2 = accel2 - sensor_calibration.accel2_bias;  % SUBTRACT SECOND ACCELEROMETER BIAS
     
-    %% --- NEW: FILTER EACH ACCELEROMETER AND FUSE THEIR X-AXIS ---
+    %% --- NEW: FILTER EACH ACCELEROMETER ALONG BOTH X AND Y, THEN FUSE ---
     % FILTER PRIMARY accelerometer (sampling rate 104 Hz)
     fs1 = 104;
-    fc1 = 1;  % cutoff frequency in Hz (tune as needed)
-    [b1,a1] = butter(2, fc1/(fs1/2));
-    accel1_smoothed = filtfilt(b1,a1, accel(:,1));
+    fc1 = 0.25;  % cutoff frequency in Hz (tune as needed)
+    [b1, a1] = butter(2, fc1/(fs1/2));
+    accel1_smoothed_x = filtfilt(b1, a1, accel(:,1));
+    accel1_smoothed_y = filtfilt(b1, a1, accel(:,2));
     
     % FILTER SECOND accelerometer (sampling rate 100 Hz)
     fs2 = 100;
-    fc2 = 1;  % cutoff frequency in Hz
-    [b2,a2] = butter(2, fc2/(fs2/2));
-    accel2_smoothed = filtfilt(b2,a2, accel2(:,1));
+    fc2 = 0.25;  % cutoff frequency in Hz
+    [b2, a2] = butter(2, fc2/(fs2/2));
+    accel2_smoothed_x = filtfilt(b2, a2, accel2(:,1));
+    accel2_smoothed_y = filtfilt(b2, a2, accel2(:,2));
     
     % FUSE using weighted average.
-    % IF you have variance estimates, set w1 = 1/var1 and w2 = 1/var2.
-    % Here we assume equal weights:
+    % Example weights (you may set these based on measured variances)
     w1 = 2; w2 = 1;
-    accel_fused = (w1*accel1_smoothed + w2*accel2_smoothed) / (w1 + w2);
+    fused_accel_x = (w1 * accel1_smoothed_x + w2 * accel2_smoothed_x) / (w1 + w2);
+    fused_accel_y = (w1 * accel1_smoothed_y + w2 * accel2_smoothed_y) / (w1 + w2);
+    % Create a fused acceleration matrix (for later use in the prediction step)
+    accel_fused = [fused_accel_x, fused_accel_y, accel(:,3)];  
+    % NOTE: We keep the original Z-axis from the primary sensor.
     
-    % USE THE FUSED X-AXIS acceleration to correct the magnetometer X reading.
-    % (The idea is that interference in the magnetometer X channel is partly due to vehicle vibrations.)
-    scale = 0.00002;  % Hyperparameter (tune this based on your system)
-    mag(:,1) = mag(:,1) - scale * accel_fused;
+    % USE THE FUSED accelerometer X & Y to correct the magnetometer X reading as before.
+    scale = 0.0002;  % Hyperparameter (tune as needed)
+    mag(:,1) = mag(:,1) - scale * fused_accel_x;
     % -----------------------------------------------------------
     
-    %% DEBUG: Plot corrected magnetometer and fused accel data
+    %% DEBUG: Plot fused accelerometer and corrected magnetometer
     figure;
     subplot(2,1,1);
     plot(mag(:,1)); title('Corrected Magnetometer X');
     subplot(2,1,2);
-    plot(accel_fused); title('Fused Smoothed Accel X');
+    plot(fused_accel_x); title('Fused Smoothed Accel X');
+
+    figure;
+    subplot(2,1,1);
+    plot(mag(:,2)); title('Corrected Magnetometer Y');
+    subplot(2,1,2);
+    plot(fused_accel_y); title('Fused Smoothed Accel Y');
+    
     
     %% Convert GT quaternion to Euler angles
     eulAngles = quat2eul(rotQuat);  % returns [yaw, pitch, roll] in ZYX order
@@ -78,8 +89,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     P_Est = cell(N,1);
     x0 = pos(1,1);
     y0 = pos(1,2);
-    % IMPORTANT: USE THE SECOND VALUE FOR YAW (since the first is NaN)
-    psi0 = yawGT(2);
+    psi0 = yawGT(2);  % IMPORTANT: use the second sample to avoid NaN
     X_Est(1,:) = [x0, y0, 0, 0, psi0, 0];
     P_Est{1} = diag([0.01, 0.01, 0.05, 0.05, 0.001, 0.05]);
     
@@ -99,10 +109,11 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
         if dt <= 0, dt = 1e-2; end
         
         xk = X_Est(k,:)';
-        [x_pred, F] = predictionStepSymbolic(xk, accel(k,:), gyro(k,:), dt);
+        % Use the fused accelerometer for prediction!
+        [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro(k,:), dt);
         P_pred = F * P_Est{k} * F' + Q;
         
-        % Build measurement vector
+        % Build measurement vector (same as before)
         [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), ...
                                              tof_right(k), tof_front(k), tof_left(k));
         
@@ -142,34 +153,38 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     psi = xk(5);
     dpsi= xk(6);
     
-    % Assume accel(2) is forward acceleration (if forward is +Y)
-    af = accel(2);
+    % ACCEL: Now using the fused accelerometer reading (in body frame)
+    % We first transform the fused acceleration from body frame to world frame.
+    % Let a_fused = [a_x; a_y] in body frame.
+    a_body = accel(1:2);  % use both X and Y
+    % Transformation from body to world (given yaw psi)
+    R_bw = [cos(psi), -sin(psi); sin(psi), cos(psi)];
+    a_world = R_bw * a_body;  % [a_wx; a_wy]
+    
+    a_wx = a_world(1);
+    a_wy = a_world(2);
+    
+    % Get gyro Z for yaw rate
     gyZ = gyro(3);
     
-    c = cos(psi);
-    s = sin(psi);
-    
+    % Predict state using constant acceleration over dt
     x_pred = zeros(6,1);
-    % Update positions (note: forward direction now defined by our coordinate system)
-    x_pred(1) = x + vx*dt + 0.5 * s * af * dt^2;
-    x_pred(2) = y + vy*dt + 0.5 * c * af * dt^2;
-    % Update velocities
-    x_pred(3) = vx + s * af * dt;
-    x_pred(4) = vy + c * af * dt;
-    % Yaw update
+    x_pred(1) = x + vx*dt + 0.5*a_wx*dt^2;
+    x_pred(2) = y + vy*dt + 0.5*a_wy*dt^2;
+    x_pred(3) = vx + a_wx*dt;
+    x_pred(4) = vy + a_wy*dt;
     x_pred(5) = psi + dpsi*dt;
-    % Yaw rate update from gyro
     x_pred(6) = gyZ;
     
-    % Jacobian F (6x6)
+    % Jacobian F (6x6) - for simplicity we use a basic approximation
+    % %TODO:Improve model
     F = eye(6);
     F(1,3) = dt;
-    F(1,5) = 0.5 * c * af * dt^2;
+    F(1,1) = 1; % note: a more detailed Jacobian would include partial derivatives wrt psi due to rotation in a_world.
     F(2,4) = dt;
-    F(2,5) = -0.5 * s * af * dt^2;
-    F(3,5) = c * af * dt;
-    F(4,5) = s * af * dt;
     F(5,6) = dt;
+    % FOR A BETTER MODEL, COMPUTE PARTIALS OF a_world WITH RESPECT TO psi.
+    % This is left as an exercise for further tuning.
 end
 
 %% ==============================================================
