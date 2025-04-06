@@ -107,31 +107,41 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     for k = 1:N-1
         dt = timeVec(k+1) - timeVec(k);
         if dt <= 0, dt = 1e-2; end
-        
+    
         xk = X_Est(k,:)';
-        % Use the fused accelerometer for prediction!
         [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro(k,:), dt);
         P_pred = F * P_Est{k} * F' + Q;
-        
-        % Build measurement vector (same as before)
+    
         [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), ...
-                                             tof_right(k), tof_front(k), tof_left(k));
-        
-        %% --- Dynamically scale the ToF measurement noise ---
+                                     tof_right(k), tof_front(k), tof_left(k));
+    
+        %% --- Build R_local (ToF status scaled) BEFORE Mahalanobis check ---
         frontScale = interpretToFStatus(tof_front_status(k));
         leftScale  = interpretToFStatus(tof_left_status(k));
         rightScale = interpretToFStatus(tof_right_status(k));
-        localScales = [1e2, rightScale, frontScale, leftScale];  % moderate scaling
+        localScales = [10, rightScale, frontScale, leftScale];  % yaw, right, front, left
         R_local = diag(localScales .* (scaleFactors .* RdiagBase));
-        %% -----------------------------------------------------------
-        
-        % EKF Update
-        [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R_local);
-        
-        % Store updated state and covariance
-        X_Est(k+1,:) = x_upd';
-        P_Est{k+1} = P_upd;
-    end
+    
+        %% --- Mahalanobis gating on yaw only ---
+        psi_meas = z_meas(1);
+        psi_pred = x_pred(5);
+        yaw_innovation = wrapToPi(psi_meas - psi_pred);
+    
+        R_psi = R_local(1,1);  % yaw variance (already scaled)
+        S_psi = H(1,:) * P_pred * H(1,:)' + R_psi;
+        d2_yaw = (yaw_innovation)^2 / S_psi;
+    
+        if d2_yaw > 9
+            H(1,:) = 0;
+            R_local(1,1) = 1e12;
+            fprintf('Yaw gated at step %d, Mahalanobis distance = %.2f\n', k, d2_yaw);
+        end
+    
+    [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R_local);
+    X_Est(k+1,:) = x_upd';
+    P_Est{k+1} = P_upd;
+end
+
     
     %% Debug: Plot magnetometer yaw (raw) vs. GT yaw
     mag_yaw = wrapToPi(atan2(mag(:,2), mag(:,1)));
