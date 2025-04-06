@@ -3,118 +3,128 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
     gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
     mag   = squeeze(permute(out.Sensor_MAG.signals.values, [3, 2, 1]));
-
-
+    accel2 = squeeze(permute(out.Sensor_LP_ACCEL.signals.values, [3, 2, 1]));  % SECOND ACCELEROMETER
 
     % Extract ToF ranges and status flags
     tof_front        = squeeze(out.Sensor_ToF2.signals.values(:,1,:));
     tof_front_status = squeeze(out.Sensor_ToF2.signals.values(:,4,:));
-
+    
     tof_left         = squeeze(out.Sensor_ToF3.signals.values(:,1,:));
     tof_left_status  = squeeze(out.Sensor_ToF3.signals.values(:,4,:));
-
+    
     tof_right        = squeeze(out.Sensor_ToF1.signals.values(:,1,:));
     tof_right_status = squeeze(out.Sensor_ToF1.signals.values(:,4,:));
-
+    
     pos     = out.GT_position.signals.values;   % Nx3 ground truth
     rotQuat = out.GT_rotation.signals.values;     % Nx4 quaternions
     timeVec = squeeze(out.GT_position.time);       % Nx1
-
+    
     sensor_calibration = load("sensor_calibration.mat");
-
+    
     %% Assume everything is the same length
     N = length(pos);
     GT = pos;  % store ground-truth positions for reference
-
+    
     %% Frame Convention & Sensor Calibration
     accel = (sensor_calibration.Rotw_a * accel')';
     gyro  = (sensor_calibration.Rotw_a * gyro')';
     mag   = (sensor_calibration.Rotw_mag * mag')';
-
-
+    accel2 = (sensor_calibration.Rotw_a2 * accel2')';  % APPLY CORRECT ROTATION FOR SECOND ACCELEROMETER
+    
     accel = accel - sensor_calibration.accel_bias;
     gyro  = gyro  - sensor_calibration.gyro_bias;
     mag   = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
+    accel2 = accel2 - sensor_calibration.accel2_bias;  % SUBTRACT SECOND ACCELEROMETER BIAS
     
-    %% --- New: Accelerometer-based magnetometer correction ---
-    % Smooth the accelerometer using a butterworth filter
-    fs = 104;  % sample rate
-    fc = 1;    % cutoff freq (2 Hz)
-    [b,a] = butter(2, fc/(fs/2));  % 2nd order
-    accel_smoothed = filtfilt(b,a, accel(:,1));
-
-    % Define a hyperparameter scale (to be tuned experimentally)
-    scale = 0.00002;  % example value; adjust based on your system
-    % Subtract a scaled version of the X-axis accelerometer reading (assumed interference)
-    % from the magnetometer reading. (Here we assume that the interference affects the X-axis.)
-    mag(:,1) = mag(:,1) - scale * accel_smoothed;
-
+    %% --- NEW: FILTER EACH ACCELEROMETER AND FUSE THEIR X-AXIS ---
+    % FILTER PRIMARY accelerometer (sampling rate 104 Hz)
+    fs1 = 104;
+    fc1 = 1;  % cutoff frequency in Hz (tune as needed)
+    [b1,a1] = butter(2, fc1/(fs1/2));
+    accel1_smoothed = filtfilt(b1,a1, accel(:,1));
+    
+    % FILTER SECOND accelerometer (sampling rate 100 Hz)
+    fs2 = 100;
+    fc2 = 1;  % cutoff frequency in Hz
+    [b2,a2] = butter(2, fc2/(fs2/2));
+    accel2_smoothed = filtfilt(b2,a2, accel2(:,1));
+    
+    % FUSE using weighted average.
+    % IF you have variance estimates, set w1 = 1/var1 and w2 = 1/var2.
+    % Here we assume equal weights:
+    w1 = 2; w2 = 1;
+    accel_fused = (w1*accel1_smoothed + w2*accel2_smoothed) / (w1 + w2);
+    
+    % USE THE FUSED X-AXIS acceleration to correct the magnetometer X reading.
+    % (The idea is that interference in the magnetometer X channel is partly due to vehicle vibrations.)
+    scale = 0.00002;  % Hyperparameter (tune this based on your system)
+    mag(:,1) = mag(:,1) - scale * accel_fused;
     % -----------------------------------------------------------
-
+    
+    %% DEBUG: Plot corrected magnetometer and fused accel data
     figure;
     subplot(2,1,1);
-    plot(mag(:,1)); title('Corrected Mag X');
+    plot(mag(:,1)); title('Corrected Magnetometer X');
     subplot(2,1,2);
-    plot(accel_smoothed(:,1)); title('Smoothed Accel X');
-
-
+    plot(accel_fused); title('Fused Smoothed Accel X');
+    
     %% Convert GT quaternion to Euler angles
-    % Using quat2eul which returns [yaw, pitch, roll] in ZYX order.
-    eulAngles = quat2eul(rotQuat);  
-    % Add π offset if needed to align with your reference frame.
-    yawGT = eulAngles(:,1) + pi;
+    eulAngles = quat2eul(rotQuat);  % returns [yaw, pitch, roll] in ZYX order
+    yawGT = eulAngles(:,1) + pi;      % Add π offset if needed
     GT = [GT, yawGT];
-
+    
     %% EKF Initialization (6D: [x, y, vx, vy, psi, dpsi])
     X_Est = zeros(N, 6);
     P_Est = cell(N,1);
     x0 = pos(1,1);
     y0 = pos(1,2);
-    psi0 = yawGT(2);  % use first sample
+    % IMPORTANT: USE THE SECOND VALUE FOR YAW (since the first is NaN)
+    psi0 = yawGT(2);
     X_Est(1,:) = [x0, y0, 0, 0, psi0, 0];
     P_Est{1} = diag([0.01, 0.01, 0.05, 0.05, 0.001, 0.05]);
-
+    
     %% Process noise Q supplied as input
     Q = q;
-
+    
     %% Base measurement noise (without dynamic scaling)
     scaleFactors = [1, 0.1, 0.1, 0.1];
     RdiagBase = [ sensor_calibration.R_psi, ...
                   sensor_calibration.R_tof_left, ...
                   sensor_calibration.R_tof_middle, ...
                   sensor_calibration.R_tof_right ];
-
-    %% Main EKF Loop
+    
+    %% MAIN EKF LOOP
     for k = 1:N-1
         dt = timeVec(k+1) - timeVec(k);
         if dt <= 0, dt = 1e-2; end
-
+        
         xk = X_Est(k,:)';
         [x_pred, F] = predictionStepSymbolic(xk, accel(k,:), gyro(k,:), dt);
         P_pred = F * P_Est{k} * F' + Q;
-
+        
         % Build measurement vector
         [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), ...
                                              tof_right(k), tof_front(k), tof_left(k));
-
+        
         %% --- Dynamically scale the ToF measurement noise ---
         frontScale = interpretToFStatus(tof_front_status(k));
         leftScale  = interpretToFStatus(tof_left_status(k));
         rightScale = interpretToFStatus(tof_right_status(k));
-        localScales = [1e2, rightScale, frontScale, leftScale]; % moderate scaling
+        localScales = [1e2, rightScale, frontScale, leftScale];  % moderate scaling
         R_local = diag(localScales .* (scaleFactors .* RdiagBase));
-
+        %% -----------------------------------------------------------
+        
         % EKF Update
         [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R_local);
-
+        
         % Store updated state and covariance
         X_Est(k+1,:) = x_upd';
         P_Est{k+1} = P_upd;
     end
-
-    %% Debug: Plot magnetometer yaw (raw) vs ground truth yaw
+    
+    %% Debug: Plot magnetometer yaw (raw) vs. GT yaw
     mag_yaw = wrapToPi(atan2(mag(:,2), mag(:,1)));
-    figure(2)
+    figure(4)
     plot(timeVec, mag_yaw, 'r'); hold on;
     plot(timeVec, wrapToPi(yawGT), 'k');
     legend('Magnetometer yaw', 'GT yaw');
@@ -131,16 +141,16 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     vy  = xk(4);
     psi = xk(5);
     dpsi= xk(6);
-
+    
     % Assume accel(2) is forward acceleration (if forward is +Y)
     af = accel(2);
     gyZ = gyro(3);
-
+    
     c = cos(psi);
     s = sin(psi);
-
+    
     x_pred = zeros(6,1);
-    % Update positions using the fact that forward direction is +Y:
+    % Update positions (note: forward direction now defined by our coordinate system)
     x_pred(1) = x + vx*dt + 0.5 * s * af * dt^2;
     x_pred(2) = y + vy*dt + 0.5 * c * af * dt^2;
     % Update velocities
@@ -150,7 +160,7 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     x_pred(5) = psi + dpsi*dt;
     % Yaw rate update from gyro
     x_pred(6) = gyZ;
-
+    
     % Jacobian F (6x6)
     F = eye(6);
     F(1,3) = dt;
@@ -164,11 +174,8 @@ end
 
 %% ==============================================================
 function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
-    % In this measurement model, we use the magnetometer reading
-    % to measure yaw directly via atan2.
-    psi_meas = atan2(mag(2), mag(1));  % Use the corrected magnetometer reading
-    
-    % Build measurement vector: [yaw; d1; d2; d3]
+    % We measure yaw from the magnetometer via atan2.
+    psi_meas = atan2(mag(2), mag(1));
     z_meas = [psi_meas; d1; d2; d3];
     
     % Predicted yaw from state
@@ -190,13 +197,11 @@ function [z_meas, H] = measurementModelOptim(x_pred, mag, d1, d2, d3)
         H(row,2) = dt_dy;
         H(row,5) = dt_dpsi;
     end
-    % Yaw measurement: derivative with respect to psi is 1.
     H(1,5) = 1;
 end
 
 %% ==============================================================
 function [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R)
-    % Compute predicted measurement from state
     psi_est = x_pred(5);
     x_est = x_pred(1);
     y_est = x_pred(2);
@@ -213,18 +218,9 @@ function [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R)
     y_tilde = z_meas - z_pred;
     y_tilde(1) = wrapToPi(y_tilde(1));
     
-    % Compute Kalman gain
     S = H * P_pred * H' + R;
-    if rcond(S) < 1e-12
-        warning('Innovation covariance matrix is nearly singular at timestep %d', k);
-        x_upd = x_pred;
-        P_upd = P_pred;
-        return;
-    end
-
     K = P_pred * H' / S;
     
-    % Update state and wrap yaw
     x_upd = x_pred + K * y_tilde;
     x_upd(5) = wrapToPi(x_upd(5));
     
@@ -289,7 +285,6 @@ end
 
 %% ---------------------------------------------------------------
 function scale = interpretToFStatus(statusVal)
-    % Return a scale factor for ToF measurement noise based on sensor status.
     switch statusVal
         case 0
             scale = 1.0;
