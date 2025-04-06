@@ -48,7 +48,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     % By default, quat2eul returns [yaw, pitch, roll] in ZYX order,
     % but you want to treat eulAngles(:,1) as yaw
     eulAngles = quat2eul(rotQuat);  % [yaw pitch roll] in ZYX
-    yawGT     = eulAngles(:,1) ;
+    yawGT     = eulAngles(:,1) +pi;
     GT = [GT, yawGT];
 
     %% EKF Initialization (6D)
@@ -97,7 +97,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
         leftScale  = interpretToFStatus(tof_left_status(k));
         rightScale = interpretToFStatus(tof_right_status(k));
 
-        localScales = [1e20, rightScale, frontScale, leftScale]; %dont trust the magnetometer
+        localScales = [1e2, rightScale, frontScale, leftScale]; %dont trust the magnetometer
         R_local = diag(localScales .* (scaleFactors .* RdiagBase));
 
         % EKF Update
@@ -109,7 +109,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
 
     end
     
-    mag_yaw = (atan2(mag(:,2), mag(:,1)));
+    mag_yaw = wrapToPi(atan2(mag(:,2), mag(:,1)));
     figure(2)
     plot(timeVec, mag_yaw, 'r'); hold on;
     plot(timeVec, yawGT, 'k'); legend('Magnetometer yaw', 'GT yaw');
@@ -140,10 +140,10 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
 
 
      % If forward = +Y in world frame,
-    x_pred(1) = x + vx*dt + 0.5 * cos(psi) * af * dt^2;
-    x_pred(2) = y + vy*dt + 0.5 * sin(psi) * af * dt^2;
-    x_pred(3) = vx + cos(psi) * af * dt;
-    x_pred(4) = vy + sin(psi) * af * dt;
+    x_pred(1) = x + vx*dt + 0.5 * s * af * dt^2;
+    x_pred(2) = y + vy*dt + 0.5 * c * af * dt^2;
+    x_pred(3) = vx + s * af * dt;
+    x_pred(4) = vy + c * af * dt;
 
     x_pred(5) = psi + dpsi*dt;                   % yaw
     x_pred(6) = gyZ;                           % yaw rate from gyro
@@ -153,11 +153,11 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     F = eye(6);
 
     F(1,3) = dt;
-    F(1,5) = -0.5 * sin(psi) * af * dt^2;
-    F(2,5) =  0.5 * cos(psi) * af * dt^2;
+    F(1,5) = 0.5 * c * af * dt^2;
+    F(2,5) =  -0.5 * s * af * dt^2;
     
-    F(3,5) = -sin(psi) * af * dt;
-    F(4,5) =  cos(psi) * af * dt;
+    F(3,5) = c * af * dt;
+    F(4,5) =  s * af* dt;
 
 end
 
