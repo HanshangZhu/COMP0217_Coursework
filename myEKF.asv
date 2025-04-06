@@ -16,7 +16,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
 
     pos     = out.GT_position.signals.values;   % Nx3 ground truth
     rotQuat = out.GT_rotation.signals.values;   % Nx4 quaternions
-    timeVec = squeeze(out.GT_position.time);             % Nx1
+    timeVec = out.GT_position.time;             % Nx1
 
     sensor_calibration = load("sensor_calibration.mat");
 
@@ -39,9 +39,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     mean(accel(:,1));
     mean(accel(:,2)); % Y-acceleration, which is forward.
     mean(accel(:,3));
-    figure(1)
-    plot(timeVec,accel(:,1),timeVec,accel(:,2),timeVec,accel(:,3))
-    title('accel raw readings')
+    plot(accel(:,1),accel(:,2),accel(:,3))
 
 
     %% Convert GT quaternion to Euler angles
@@ -110,7 +108,6 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     end
     
     mag_yaw = (atan2(mag(:,2), mag(:,1)));
-    figure(2)
     plot(timeVec, mag_yaw, 'r'); hold on;
     plot(timeVec, yawGT, 'k'); legend('Magnetometer yaw', 'GT yaw');
 
