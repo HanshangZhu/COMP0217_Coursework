@@ -91,7 +91,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     y0 = pos(1,2);
     psi0 = yawGT(2);  % IMPORTANT: use the second sample to avoid NaN
     X_Est(1,:) = [x0, y0, 0, 0, psi0, 0];
-    P_Est{1} = diag([0.01, 0.01, 0.05, 0.05, 0.001, 0.05]);
+    P_Est{1} = diag([0.001, 0.001, 0.05, 0.05, 0.001, 0.05]);
     
     %% Process noise Q supplied as input
     Q = q;
@@ -119,7 +119,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
         frontScale = interpretToFStatus(tof_front_status(k));
         leftScale  = interpretToFStatus(tof_left_status(k));
         rightScale = interpretToFStatus(tof_right_status(k));
-        localScales = [10, rightScale, frontScale, leftScale];  % yaw, right, front, left
+        localScales = [0.25, rightScale, frontScale, leftScale];  % yaw, right, front, left
         R_local = diag(localScales .* (scaleFactors .* RdiagBase));
     
         %% --- Mahalanobis gating on yaw only ---
