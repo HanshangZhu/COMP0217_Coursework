@@ -1,4 +1,4 @@
-function [X_Est, P_Est, GT] = myEKF(out)
+function [X_Est, P_Est, GT] = myEKF(out, q)
     %% Sensor Data Extraction from Simulation Output
     accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
     gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
@@ -35,11 +35,18 @@ function [X_Est, P_Est, GT] = myEKF(out)
     gyro  = gyro  - sensor_calibration.gyro_bias;
     mag   = (mag - sensor_calibration.b_mag) * sensor_calibration.A_mag;
 
+
+    mean(accel(:,1));
+    mean(accel(:,2)); % Y-acceleration, which is forward.
+    mean(accel(:,3));
+
+
     %% Convert GT quaternion to Euler angles
-    % By default, quat2eul returns [roll, pitch, yaw] in ZYX order,
+    % By default, quat2eul returns [yaw, pitch, roll] in ZYX order,
     % but you want to treat eulAngles(:,1) as yaw
-    eulAngles = quat2eul(rotQuat);  % [roll, pitch, yaw] in ZYX
-    yawGT     = eulAngles(:,1);     
+    eulAngles = quat2eul(rotQuat);  % [yaw pitch roll] in ZYX
+    yawGT     = eulAngles(:,1) ;
+    GT = [GT, yawGT];
 
     %% EKF Initialization (6D)
     % State = [ x, y, vx, vy, psi, dpsi ]
@@ -54,7 +61,8 @@ function [X_Est, P_Est, GT] = myEKF(out)
     P_Est{1}   = diag([0.01, 0.01, 0.05, 0.05, 0.001, 0.05]);
 
     % Process noise Q
-    Q = diag([1e-6, 1e-6, 1e-3, 1e-3, 1e-5, 1e-3]);
+    %Q = diag([1e-6, 1e-6, 1e-3, 1e-3, 1e-5, 1e-3]);
+    Q = q;
 
     % Base measurement noise (without status scaling)
     scaleFactors = [1, 0.1, 0.1, 0.1];
@@ -95,6 +103,7 @@ function [X_Est, P_Est, GT] = myEKF(out)
         % Store
         X_Est(k+1,:) = x_upd';
         P_Est{k+1}   = P_upd;
+
     end
 end
 
@@ -111,8 +120,8 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     psi = xk(5);
     dpsi= xk(6);
 
-    % We'll assume accel(3) is forward acceleration in your chosen frame
-    af  = accel(3);
+    % We'll assume accel(2) is forward acceleration in your chosen frame
+    af  = accel(2);
     gyZ = gyro(3);
 
     c = cos(psi);
@@ -120,38 +129,31 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
 
     x_pred = zeros(6,1);
 
-    % x position
-    x_pred(1) = x + vx*dt + 0.5*c*af*dt^2;
-    % y position
-    x_pred(2) = y + vy*dt + 0.5*s*af*dt^2;
-    % vx
-    x_pred(3) = vx + c*af*dt;
-    % vy
-    x_pred(4) = vy + s*af*dt;
-    % psi
-    x_pred(5) = psi + dpsi*dt;
-    % dpsi
-    x_pred(6) = gyZ;
+
+     % If forward = +Y in world frame,
+    % and we define ψ=0 => facing up the +Y direction
+    
+    % c = cos(psi), s = sin(psi)
+    x_pred(1) = x + vx*dt + 0.5 * s * af * dt^2;  % X uses sin(psi)
+    x_pred(2) = y + vy*dt + 0.5 * c * af * dt^2;  % Y uses cos(psi)
+    x_pred(3) = vx + s * af * dt;                % vx
+    x_pred(4) = vy + c * af * dt;                % vy
+    x_pred(5) = psi + dpsi*dt;                   % yaw
+    x_pred(6) = gyZ;                           % yaw rate from gyro
+
 
     % Jacobian (6x6)
     F = eye(6);
 
-    % partial x wrt vx
     F(1,3) = dt;
-    F(1,5) = -0.5*s*af*dt^2;
-
-    % partial y wrt vy
+    F(1,5) = -0.5 * c * af * dt^2;
+    
     F(2,4) = dt;
-    F(2,5) =  0.5*c*af*dt^2;
+    F(2,5) =  0.5 * s * af * dt^2;
+    
+    F(3,5) = -c * af * dt;
+    F(4,5) =  s * af * dt;
 
-    % partial vx wrt psi
-    F(3,5) = -s*af*dt;
-
-    % partial vy wrt psi
-    F(4,5) =  c*af*dt;
-
-    % partial psi wrt dpsi
-    F(5,6) = dt;
 end
 
 %% ==============================================================
