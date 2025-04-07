@@ -1,4 +1,4 @@
-function [X_Est, P_Est, GT] = myEKF(out, q)
+function [X_Est, P_Est, GT , gyro] = myEKF(out, q)
     %% Sensor Data Extraction from Simulation Output
     accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
     gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
@@ -64,6 +64,8 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     scale = 0.0002;  % Hyperparameter (tune as needed)
     mag(:,1) = mag(:,1) - scale * fused_accel_x;
     % -----------------------------------------------------------
+
+    
     
     %% DEBUG: Plot fused accelerometer and corrected magnetometer
     figure;
@@ -77,7 +79,17 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     plot(mag(:,2)); title('Corrected Magnetometer Y');
     subplot(2,1,2);
     plot(fused_accel_y); title('Fused Smoothed Accel Y');
-    
+
+    %% Buttering the gyro yaw rate
+
+    order = 2;           % keep low
+    cutoff = 2;          % ~2 Hz is usually good for gyro
+    [b, a] = butter(order, cutoff / (104/2));
+    gyro_z = gyro(:,3);  % extract raw yaw rate
+    gyro_z = filter(b, a, gyro_z);  % smooth it
+
+
+ 
     
     %% Convert GT quaternion to Euler angles
     eulAngles = quat2eul(rotQuat);  % returns [yaw, pitch, roll] in ZYX order
@@ -91,7 +103,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     y0 = pos(1,2);
     psi0 = yawGT(2);  % IMPORTANT: use the second sample to avoid NaN
     X_Est(1,:) = [x0, y0, 0, 0, psi0, 0];
-    P_Est{1} = diag([0.01, 0.01, 0.05, 0.05, 0.001, 0.05]);
+    P_Est{1} = diag([0.001, 0.001, 0.05, 0.05, 0.001, 0.05]);
     
     %% Process noise Q supplied as input
     Q = q;
@@ -107,41 +119,41 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     for k = 1:N-1
         dt = timeVec(k+1) - timeVec(k);
         if dt <= 0, dt = 1e-2; end
-        
+    
         xk = X_Est(k,:)';
-        % Use the fused accelerometer for prediction!
-        [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro(k,:), dt);
+        [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro_z(k), dt);
         P_pred = F * P_Est{k} * F' + Q;
-        
+    
         [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), ...
                                      tof_right(k), tof_front(k), tof_left(k));
-
-    % Compute innovation and expected measurement
-    psi_meas = z_meas(1);  % yaw from magnetometer
-    psi_pred = x_pred(5);  % predicted yaw
-    yaw_innovation = wrapToPi(psi_meas - psi_pred);
     
-    % Compute Mahalanobis distance for yaw only
-    R_psi = sensor_calibration.R_psi;  % yaw variance
-    S_psi = H(1,:) * P_pred * H(1,:)' + R_psi;
-    d2_yaw = (yaw_innovation)^2 / S_psi;
+        %% --- Build R_local (ToF status scaled) BEFORE Mahalanobis check ---
+        frontScale = interpretToFStatus(tof_front_status(k));
+        leftScale  = interpretToFStatus(tof_left_status(k));
+        rightScale = interpretToFStatus(tof_right_status(k));
+        localScales = [0.25, rightScale, frontScale, leftScale];  % yaw, right, front, left
+        R_local = diag(localScales .* (scaleFactors .* RdiagBase));
     
-    % Gating threshold (e.g., 3-sigma for 1 DoF = 9)
-    if d2_yaw > 9
-        % Skip yaw update by setting H(1,:) = 0 and R(1,1) = inf
-        H(1,:) = 0;
-        R_local(1,1) = 1e12;  % effectively ignore yaw
-        fprintf('Yaw gated at step %d, Mahalanobis distance = %.2f\n', k, d2_yaw);
-    end
+        %% --- Mahalanobis gating on yaw only ---
+        psi_meas = z_meas(1);
+        psi_pred = x_pred(5);
+        yaw_innovation = wrapToPi(psi_meas - psi_pred);
     
-    % EKF Update
+        R_psi = R_local(1,1);  % yaw variance (already scaled)
+        S_psi = H(1,:) * P_pred * H(1,:)' + R_psi;
+        d2_yaw = (yaw_innovation)^2 / S_psi;
+    
+        if d2_yaw > 9
+            H(1,:) = 0;
+            R_local(1,1) = 1e12;
+            fprintf('Yaw gated at step %d, Mahalanobis distance = %.2f\n', k, d2_yaw);
+        end
+    
     [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R_local);
+    X_Est(k+1,:) = x_upd';
+    P_Est{k+1} = P_upd;
+end
 
-        
-        % Store updated state and covariance
-        X_Est(k+1,:) = x_upd';
-        P_Est{k+1} = P_upd;
-    end
     
     %% Debug: Plot magnetometer yaw (raw) vs. GT yaw
     mag_yaw = wrapToPi(atan2(mag(:,2), mag(:,1)));
@@ -151,6 +163,15 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     legend('Magnetometer yaw', 'GT yaw');
     title('Magnetometer vs Ground Truth Yaw');
     xlabel('Time [s]'); ylabel('Yaw [rad]');
+
+     err_x = X_Est(:,1) - GT(:,1);
+        err_y = X_Est(:,2) - GT(:,2);
+        err_yaw = wrapToPi(X_Est(:,5) - GT(:,4));  % GT(:,4) is yawGT
+        
+        figure;
+        subplot(3,1,1); plot(timeVec, err_x); title('Error in x');
+        subplot(3,1,2); plot(timeVec, err_y); title('Error in y');
+        subplot(3,1,3); plot(timeVec, err_yaw); title('Error in yaw');
 end
 
 %% ==============================================================
@@ -175,7 +196,7 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     a_wy = a_world(2);
     
     % Get gyro Z for yaw rate
-    gyZ = gyro(3);
+    gyZ = gyro;
     
     % Predict state using constant acceleration over dt
     x_pred = zeros(6,1);

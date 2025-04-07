@@ -1,4 +1,4 @@
-function [X_Est, P_Est, GT] = myEKF(out, q)
+function [X_Est, P_Est, GT , gyro_z] = myEKF(out, q)
     %% Sensor Data Extraction from Simulation Output
     accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
     gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
@@ -64,6 +64,8 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     scale = 0.0002;  % Hyperparameter (tune as needed)
     mag(:,1) = mag(:,1) - scale * fused_accel_x;
     % -----------------------------------------------------------
+
+    
     
     %% DEBUG: Plot fused accelerometer and corrected magnetometer
     figure;
@@ -77,7 +79,17 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
     plot(mag(:,2)); title('Corrected Magnetometer Y');
     subplot(2,1,2);
     plot(fused_accel_y); title('Fused Smoothed Accel Y');
-    
+
+    %% Buttering the gyro yaw rate
+
+    order = 2;           % keep low
+    cutoff = 0.5;          % ~2 Hz is usually good for gyro
+    [b, a] = butter(order, cutoff / (104/2));
+    gyro_z = gyro(:,3);  % extract raw yaw rate
+    gyro_z = filter(b, a, gyro_z);  % smooth it
+
+
+ 
     
     %% Convert GT quaternion to Euler angles
     eulAngles = quat2eul(rotQuat);  % returns [yaw, pitch, roll] in ZYX order
@@ -109,7 +121,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
         if dt <= 0, dt = 1e-2; end
     
         xk = X_Est(k,:)';
-        [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro(k,:), dt);
+        [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro_z(k), dt);
         P_pred = F * P_Est{k} * F' + Q;
     
         [z_meas, H] = measurementModelOptim(x_pred, mag(k,:), ...
@@ -134,7 +146,7 @@ function [X_Est, P_Est, GT] = myEKF(out, q)
         if d2_yaw > 9
             H(1,:) = 0;
             R_local(1,1) = 1e12;
-            fprintf('Yaw gated at step %d, Mahalanobis distance = %.2f\n', k, d2_yaw);
+            %fprintf('Yaw gated at step %d, Mahalanobis distance = %.2f\n', k, d2_yaw);
         end
     
     [x_upd, P_upd] = updateStep(x_pred, P_pred, z_meas, H, R_local);
@@ -184,7 +196,7 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     a_wy = a_world(2);
     
     % Get gyro Z for yaw rate
-    gyZ = gyro(3);
+    gyZ = gyro;
     
     % Predict state using constant acceleration over dt
     x_pred = zeros(6,1);
