@@ -1,4 +1,4 @@
-% myEKF_nomag.m
+% myEKF_nomag.m main ekf functions
 function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
     %% Sensor Data Extraction
     accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
@@ -53,9 +53,9 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
     end
 
     %% Low-pass filter gyro yaw rate
-    order = 5; cutoff = 0.2;
+    order = 5; cutoff = 2;
     [b, a] = butter(order, cutoff / (104/2));
-    gyro_z = filter(b, a, gyro(:,3));
+    gyro_z = filtfilt(b, a, gyro(:,3));
     %gyro(:,3) = gyro_z;  % Optional: replace raw gyro_z in original array if needed
 
     %% Debug: Plot filtered vs raw gyro yaw rate
@@ -88,7 +88,8 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
 
     disp(Q)
     
-
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% UPDATE LOOP
     for k = 1:N-1
         dt = timeVec(k+1) - timeVec(k);
         if dt <= 0, dt = 1e-2; end
@@ -99,9 +100,9 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
 
         [z_meas, H] = measurementModelOptim(x_pred, ...
                     tof_right(k), tof_front(k), tof_left(k));
-        R_local = diag(min([interpretToFStatus(tof_right_status(k)), ...
+        R_local = diag(min(min([interpretToFStatus(tof_right_status(k)), ...
                         interpretToFStatus(tof_front_status(k)), ...
-                        interpretToFStatus(tof_left_status(k))] .* (scaleFactors .* RdiagBase*1e5),0.1) );
+                        interpretToFStatus(tof_left_status(k))] .* (scaleFactors .* eye(3)*1000),0.1*scaleFactors),10) ); %manually disable the interpret status
 
         [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, H, R_local);
         X_Est(k+1,:) = x_upd';
@@ -224,8 +225,8 @@ end
 function scale = interpretToFStatus(statusVal)
     switch statusVal
         case 0, scale = 1.0;
-        case 2, scale = 10.0;
-        case 4, scale = 1e2;
+        case 2, scale = 2.0;
+        case 4, scale = 4.0;
         otherwise, scale = 10.0;
     end
 end

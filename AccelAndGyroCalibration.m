@@ -1,4 +1,4 @@
-
+clear;%Calibration script
 
 % Load Accel / Gyro Training data
 AccelGyroCalib = load("calib2_straight.mat");
@@ -121,13 +121,13 @@ R_psi = var(psi_meas);
 % legend('X', 'Y', 'Z')
 % grid on
 % 
-% figure(2)
-% plot(t, gyro_corrected);
-% title('Gyroscope Data');
-% xlabel('Time (s)');
-% ylabel('Angular Velocity (rad/s)');
-% legend('X (Roll)', 'Y (Pitch)', 'Z (Yaw)');
-% 
+ figure(2)
+ plot(t, gyro_corrected);
+ title('Gyroscope Data');
+ xlabel('Time (s)');
+ ylabel('Angular Velocity (rad/s)');
+ legend('X (Roll)', 'Y (Pitch)', 'Z (Yaw)');
+ 
 % figure(3)
 % plot(t, accel2_corrected)
 % title('Accelerometer 2 Information')
