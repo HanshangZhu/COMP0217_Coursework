@@ -1,8 +1,9 @@
-% myEKF_nomag.m main ekf functions
-function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
-    %% Sensor Data Extraction
-    accel = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
-    gyro  = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
+% myEKF_nomag.m: main EKF functions using the measurement model for update
+
+function [X_Est, P_Est, GT, gyro_z] = myEKF_nomag(out, q, r, plt)
+    %% === Sensor Data Extraction ===
+    accel  = squeeze(permute(out.Sensor_ACCEL.signals.values, [3, 2, 1]));
+    gyro   = squeeze(permute(out.Sensor_GYRO.signals.values, [3, 2, 1]));
     accel2 = squeeze(permute(out.Sensor_LP_ACCEL.signals.values, [3, 2, 1]));
 
     tof_front        = squeeze(out.Sensor_ToF2.signals.values(:,1,:));
@@ -21,15 +22,15 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
     N = length(pos);
     GT = pos;
 
-    accel = (sensor_calibration.Rotw_a * accel')';
-    gyro  = (sensor_calibration.Rotw_a * gyro')';
+    accel  = (sensor_calibration.Rotw_a * accel')';
+    gyro   = (sensor_calibration.Rotw_a * gyro')';
     accel2 = (sensor_calibration.Rotw_a2 * accel2')';
 
-    accel = accel - sensor_calibration.accel_bias;
-    gyro  = gyro - sensor_calibration.gyro_bias;
+    accel  = accel - sensor_calibration.accel_bias;
+    gyro   = gyro - sensor_calibration.gyro_bias;
     accel2 = accel2 - sensor_calibration.accel2_bias;
 
-    fs1 = 104; fs2 = 100; fc = 0.5; order=2;
+    fs1 = 104; fs2 = 100; fc = 0.5; order = 2;
     [b1, a1] = butter(order, fc/(fs1/2));
     [b2, a2] = butter(order, fc/(fs2/2));
     accel1_x = filtfilt(b1, a1, accel(:,1));
@@ -49,16 +50,15 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
         hold off
         title('Smoothed fused Accel x/y');
         legend('y','x');
-       
     end
 
-    %% Low-pass filter gyro yaw rate
-    order = 5; cutoff = 2;
+    %% === Low-pass filter gyro yaw rate ===
+    order = 5; cutoff = 4;
     [b, a] = butter(order, cutoff / (104/2));
     gyro_z = filtfilt(b, a, gyro(:,3));
-    %gyro(:,3) = gyro_z;  % Optional: replace raw gyro_z in original array if needed
+    % Optionally: gyro(:,3) = gyro_z;
 
-    %% Debug: Plot filtered vs raw gyro yaw rate
+    %% === Debug: Plot filtered vs raw gyro yaw rate ===
     if plt
         figure;
         plot(timeVec, gyro(:,3), 'b-', 'DisplayName', 'Raw Gyro Z'); hold on;
@@ -70,171 +70,199 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
         grid on;
     end
 
-
     yawGT = quat2eul(rotQuat);
+    % Be sure to choose the correct yaw value; here we use the first element.
     yawGT = yawGT(:,1) + pi;
+    yawGT = unwrap(yawGT);
     GT = [GT, yawGT];
 
-    X_Est = zeros(N, 6);
+    %% === EKF Initialization ===
+    % Store state as a 5D vector [x, y, vx, vy, yaw].
+    X_Est = zeros(N, 5);
     P_Est = cell(N,1);
-    X_Est(1,:) = [pos(1,1), pos(1,2), 0, 0, yawGT(2), 0];
-    P_Est{1} = diag([0.001, 0.001, 0.05, 0.05, 0.001, 0.05]);
+    % Here we initialize using the first position and the first yaw value.
+    X_Est(1,:) = [pos(1,1), pos(1,2), 0, 0, yawGT(1)];
+    % Covariance for 5 states
+    P_Est{1} = diag([0.01, 0.01, 0.01, 0.01, 0]);
     Q = q;
-
-    RdiagBase = [ sensor_calibration.R_tof_left, ...
-                  sensor_calibration.R_tof_middle, ...
-                  sensor_calibration.R_tof_right ];
+    % The base R (for the three ToF sensors) is taken from the calibration
+    RdiagBase = [sensor_calibration.R_tof_left, sensor_calibration.R_tof_middle, sensor_calibration.R_tof_right];
     scaleFactors = r;
-
+    
     disp(Q)
     
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% UPDATE LOOP
+    %% === UPDATE LOOP ===
     for k = 1:N-1
         dt = timeVec(k+1) - timeVec(k);
         if dt <= 0, dt = 1e-2; end
-
+    
+        % Prediction
         xk = X_Est(k,:)';
         [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro_z(k), dt);
-        P_pred = F * P_Est{k} * F' + Q;
-
-        [z_meas, H] = measurementModelOptim(x_pred, ...
-                    tof_right(k), tof_front(k), tof_left(k));
-        R_local = diag(min(min([interpretToFStatus(tof_right_status(k)), ...
-                        interpretToFStatus(tof_front_status(k)), ...
-                        interpretToFStatus(tof_left_status(k))] .* (scaleFactors .* eye(3)*1000),0.1*scaleFactors),10) ); %manually disable the interpret status
-
-        [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, H, R_local);
+        F5 = F(1:5,1:5);
+        Q5 = Q(1:5,1:5);
+        P_pred = F5 * P_Est{k} * F5' + Q5;
+        
+        % Measurement prediction
+        [z_pred, H] = measurementModel(x_pred);
+        z_meas = [tof_right(k); tof_front(k); tof_left(k)];
+    
+        % Kalman update
+        innovation = z_meas - z_pred;
+        R_meas = diag(scaleFactors);
+        S = H * P_pred * H' + R_meas;
+        K = P_pred * H' / S;
+        x_upd = x_pred + K * innovation;
+        x_upd(5) = wrapToPi(x_upd(5));
+        P_upd = (eye(5) - K * H) * P_pred;
+    
+        % Store result
         X_Est(k+1,:) = x_upd';
         P_Est{k+1} = P_upd;
-
+    
+        % ===== DEBUGGING OUTPUT =====
         if mod(k,50) == 0
-            fprintf('Step %d: Printing Q and R\n', k);
-            disp(Q);
-            disp(R_local);
-            fprintf('Printing K:');
-            disp(K);
+            fprintf('\n--- EKF Step %d ---\n', k);
+            fprintf('Innovation (z_meas - z_pred):\n'); disp(innovation');
+            fprintf('Kalman Gain K (rows for x, y, psi):\n');
+            disp(K([1,2,5], :));  % focus on position and yaw
+            fprintf('Updated yaw estimate: %.3f rad\n', x_upd(5));
+            disp("z_meas (actual ToF readings):");
+            disp(z_meas');
+            
+            disp("z_pred (predicted ToF readings):");
+            disp(z_pred');
+
+        end
+    
+        % === Optional: store debug data ===
+        % debug_velocity(k,:) = x_upd(3:4);  % uncomment if you want to log velocities
+        % debug_psi(k) = x_upd(5);           % store yaw estimate
+        % debug_innov(k,:) = innovation';    % store innovations
+    
+    
+       
+    
+        % Calculate and plot errors
+        err_x = X_Est(:,1) - GT(:,1);
+        err_y = X_Est(:,2) - GT(:,2);
+        err_yaw = wrapToPi(X_Est(:,5) - GT(:,4));
+        if plt
+            figure;
+            subplot(3,1,1); plot(timeVec, err_x); title('Error in x');
+            subplot(3,1,2); plot(timeVec, err_y); title('Error in y');
+            subplot(3,1,3); plot(timeVec, smooth(err_yaw)); title('Error in yaw');
         end
     end
-
-    err_x = X_Est(:,1) - GT(:,1);
-    err_y = X_Est(:,2) - GT(:,2);
-    err_yaw = wrapToPi(X_Est(:,5) - GT(:,4));
-    if plt
-        figure;
-        subplot(3,1,1); plot(timeVec, err_x); title('Error in x');
-        subplot(3,1,2); plot(timeVec, err_y); title('Error in y');
-        subplot(3,1,3); plot(timeVec, smooth(err_yaw)); title('Error in yaw');
-    end
 end
-function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
+
+%% === Prediction Step Function (5D) ===
+function [x_pred, F] = predictionStepSymbolic(xk, accel, gyroz, dt)
+    % This version assumes that the state’s yaw (psi) is defined relative 
+    % to the +X axis. (Originally, psi=0 meant facing +Y.)
+    %
+    % To convert from the old convention (if needed), you could define:
+    %   psi_effective = psi - pi/2;
+    % Here we assume you have reinitialized so that xk(5) is in the new frame.
+    
+    % Extract the 5 states: [x, y, vx, vy, psi] where psi=0 => +X direction.
     x   = xk(1);
     y   = xk(2);
     vx  = xk(3);
     vy  = xk(4);
-    psi = xk(5);
-    dpsi= xk(6);
+    psi = xk(5);  % New convention: 0 means heading +X.
+
+    gyroz = -gyroz;
     
-    % Accelerometer in body frame
+    % Use the standard rotation matrix for a vector pointing in the direction psi.
+    % (In a standard robotics context, if the vehicle’s forward direction is along body x,
+    %  then R = [cos(psi) -sin(psi); sin(psi) cos(psi)] maps body-frame into world-frame.)
+    R_bw = [cos(psi), -sin(psi); 
+            sin(psi),  cos(psi)];
+    
+    % Accelerometer measurements in the body frame.
     a_x = accel(1);
     a_y = accel(2);
-    R_bw = [cos(psi), -sin(psi); sin(psi), cos(psi)];
     a_world = R_bw * [a_x; a_y];
-    
     a_wx = a_world(1);
     a_wy = a_world(2);
-    gyZ = gyro;
-
-    x_pred = zeros(6,1);
-    x_pred(1) = x + vx*dt + 0.5*a_wx*dt^2;
-    x_pred(2) = y + vy*dt + 0.5*a_wy*dt^2;
-    x_pred(3) = vx + a_wx*dt;
-    x_pred(4) = vy + a_wy*dt;
-    x_pred(5) = psi + dpsi*dt;
-    x_pred(6) = gyZ;
-
-    F = eye(6);
+    
+    % Predict new state using a constant-acceleration approximation.
+    x_pred = zeros(5,1);
+    x_pred(1) = x + vx * dt + 0.5 * a_wx * dt^2;
+    x_pred(2) = y + vy * dt + 0.5 * a_wy * dt^2;
+    x_pred(3) = vx + a_wx * dt;
+    x_pred(4) = vy + a_wy * dt;
+    % Update yaw using the current gyro measurement (assumed to be in rad/s)
+    x_pred(5) = psi + gyroz * dt;
+    
+    % Compute the Jacobian F for the 5-state system.
+    F = eye(5);
     F(1,3) = dt;
     F(2,4) = dt;
-    F(5,6) = dt;
-
-    % NEW: Derivatives due to yaw rotation
-    F(1,5) = -0.5 * dt^2 * (a_x * sin(psi) + a_y * cos(psi));
-    F(2,5) =  0.5 * dt^2 * (a_x * cos(psi) - a_y * sin(psi));
-    F(3,5) = -dt * (a_x * sin(psi) + a_y * cos(psi));
-    F(4,5) =  dt * (a_x * cos(psi) - a_y * sin(psi));
+    % For the derivatives of position and velocity with respect to psi,
+    % note: d/dpsi{cos(psi)} = -sin(psi) and d/dpsi{sin(psi)} = cos(psi).
+    % The chain rule gives:
+    F(1,5) = -0.5 * dt^2 * ( a_x * sin(psi) + a_y * cos(psi) );
+    F(2,5) =  0.5 * dt^2 * ( a_x * cos(psi) - a_y * sin(psi) );
+    F(3,5) = -dt * ( a_x * sin(psi) + a_y * cos(psi) );
+    F(4,5) =  dt * ( a_x * cos(psi) - a_y * sin(psi) );
 end
 
-
-function [z_meas, H] = measurementModelOptim(x_pred, d1, d2, d3)
-    psi = x_pred(5); x = x_pred(1); y = x_pred(2);
-    offsets = [-pi/2, 0, pi/2];
-    angles = psi + offsets;
-    d_pred = zeros(3,1);
-    H = zeros(3,6);
-    for i = 1:3
-        theta = angles(i);
-        [t, ~, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta);
-        d_pred(i) = t;
-        H(i,1) = dt_dx;
-        H(i,2) = dt_dy;
-        H(i,5) = dt_dpsi;
-    end
-    z_meas = [d1; d2; d3];
-end
-
-function [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, H, R)
-    x_est = x_pred(1); y_est = x_pred(2); psi_est = x_pred(5);
-    angles = psi_est + [-pi/2, 0, pi/2];
-    d_pred = arrayfun(@(a) rayBoxIntersection(x_est, y_est, a), angles);
-    z_pred = d_pred(:);
-
-    y_tilde = z_meas - z_pred;
-    S = H * P_pred * H' + R;
-    K = P_pred * H' / S;
-    x_upd = x_pred + K * y_tilde;
-    x_upd(5) = wrapToPi(x_upd(5));
-    P_upd = (eye(length(x_pred)) - K * H) * P_pred;
-end
-
-function [t, branch, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta)
-    x_left = -1.2; x_right = 1.2;
-    y_bottom = -1.2; y_top = 1.2;
-    cth = cos(theta); sth = sin(theta);
-
-    x_wall = ternary(cth > 0, x_right, ternary(cth < 0, x_left, NaN));
-    y_wall = ternary(sth > 0, y_top, ternary(sth < 0, y_bottom, NaN));
-
-    t_v = ternary(~isnan(x_wall) && abs(cth) > 1e-6, (x_wall - x)/cth, inf);
-    t_h = ternary(~isnan(y_wall) && abs(sth) > 1e-6, (y_wall - y)/sth, inf);
-
-    if t_v <= 0, t_v = inf; end
-    if t_h <= 0, t_h = inf; end
-
-    if t_v < t_h
-        t = t_v; branch = 1;
-        dt_dx = -1/cth; dt_dy = 0;
-        dt_dpsi = (x_wall - x) * sth / (cth^2);
-    else
-        t = t_h; branch = 2;
-        dt_dx = 0; dt_dy = -1/sth;
-        dt_dpsi = - (y_wall - y) * cth / (sth^2);
-    end
-end
-
-function scale = interpretToFStatus(statusVal)
-    switch statusVal
-        case 0, scale = 1.0;
-        case 2, scale = 2.0;
-        case 4, scale = 4.0;
-        otherwise, scale = 10.0;
-    end
-end
-
-function val = ternary(cond, a, b)
-    if cond
-        val = a;
-    else
-        val = b;
-    end
+%% === 5D Measurement Model Function ===
+function [z_pred, H] = measurementModel(x)
+    % In this new measurement model we assume that the state’s yaw
+    % is defined from the +X axis (i.e. when psi=0, the vehicle is heading
+    % in the +X direction). Accordingly, the sensor definitions are modified:
+    %
+    %   - The front sensor now “sees” a wall fixed at x = x_front.
+    %   - The left sensor, mounted to the left of the vehicle (i.e. at psi+pi/2),
+    %     sees a wall fixed at y = y_left.
+    %   - The right sensor, mounted to the right (at psi–pi/2), sees a wall at y = y_right.
+    
+    % Define wall positions (in world coordinates)
+    x_front = 1.2;   % Front wall is at x = 1.2 (in front of vehicle when heading +X)
+    y_left  = 1.2;   % Left wall is at y = 1.2
+    y_right = -1.2;  % Right wall is at y = -1.2
+    
+    % Extract state variables.
+    x_pos = x(1);
+    y_pos = x(2);
+    psi   = x(5);   % psi in new convention.
+    
+    % To avoid division by (near) zero, define a safe version of cos(psi)
+    epsilon = 1e-4;
+    cos_psi = cos(psi);
+    safe_cos = sign(cos_psi) * max(abs(cos_psi), epsilon);
+    
+    % Compute predicted distances along the sensor rays.
+    % Front sensor (points in the direction psi, intercepting vertical wall at x = x_front)
+    t_front = (x_front - x_pos) / safe_cos;
+    % Left sensor (points in the direction psi+pi/2; for a horizontal wall at y = y_left,
+    % note sin(psi+pi/2)=cos(psi) so we also use safe_cos)
+    t_left = (y_left - y_pos) / safe_cos;
+    % Right sensor (points in the direction psi–pi/2; here sin(psi–pi/2) = -cos(psi))
+    t_right = (y_pos - y_right) / safe_cos;
+    
+    % Arrange predicted measurements in the same order as the sensor data:
+    % [Right sensor; Front sensor; Left sensor]
+    z_pred = [t_right; t_front; t_left];
+    
+    % Now compute the measurement Jacobian H.
+    % For the front sensor: t_front = (x_front - x_pos) / cos(psi)
+    H = zeros(3,5);
+    % Partial derivatives with respect to x_pos (only appears in numerator)
+    H(2,1) = -1/safe_cos;
+    % With respect to psi, differentiate 1/cos(psi): d/dpsi[1/cos(psi)] = sin(psi)/cos(psi)^2.
+    H(2,5) = -(x_front - x_pos) * sin(psi) / (safe_cos^2);
+    
+    % For the left sensor: t_left = (y_left - y_pos) / cos(psi)
+    H(3,2) = -1/safe_cos;
+    H(3,5) = -(y_left - y_pos) * sin(psi) / (safe_cos^2);
+    
+    % For the right sensor: t_right = (y_pos - y_right) / cos(psi)
+    H(1,2) = 1/safe_cos;  % note the sign reversal compared to the left sensor.
+    H(1,5) = -(y_pos - y_right) * sin(psi) / (safe_cos^2);
+    
+    % The other derivatives (with respect to vx and vy) remain zero.
 end
