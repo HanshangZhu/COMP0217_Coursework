@@ -93,7 +93,7 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF(out, q)
     
     %% Convert GT quaternion to Euler angles
     eulAngles = quat2eul(rotQuat);  % returns [yaw, pitch, roll] in ZYX order
-    yawGT = eulAngles(:,1) + pi;      % Add π offset if needed
+    yawGT = wrapToPi(eulAngles(:,1) + pi);      % Add π offset if needed
     GT = [GT, yawGT];
     
     %% EKF Initialization (6D: [x, y, vx, vy, psi, dpsi])
