@@ -162,4 +162,11 @@ function [z_pred, H] = measurementModel(x)
     H(2,5) = - (y_top - y_pos) * cos_theta / safe_sin_sq;
     H(3,1) = -1 / safe_sin;
     H(3,5) = - (x_right - x_pos) * cos_theta / safe_sin_sq;
+
+    if abs(cos_psi) < 0.1  % ~85 degrees off
+        z_pred = [NaN; NaN; NaN];  % or large value, or skip update
+        H = zeros(3,5);
+        return;
+    end
+
 end

@@ -76,6 +76,7 @@ function [X_Est, P_Est, GT, gyro_z] = myEKF_nomag(out, q, r, plt)
     yawGT = unwrap(yawGT);
     GT = [GT, yawGT];
 
+
     %% === EKF Initialization ===
     % Store state as a 5D vector [x, y, vx, vy, yaw].
     X_Est = zeros(N, 5);
@@ -88,6 +89,7 @@ function [X_Est, P_Est, GT, gyro_z] = myEKF_nomag(out, q, r, plt)
     % The base R (for the three ToF sensors) is taken from the calibration
     RdiagBase = [sensor_calibration.R_tof_left, sensor_calibration.R_tof_middle, sensor_calibration.R_tof_right];
     scaleFactors = r;
+    max_range = 2.0;  % meters
     
     disp(Q)
     
@@ -105,7 +107,10 @@ function [X_Est, P_Est, GT, gyro_z] = myEKF_nomag(out, q, r, plt)
         
         % Measurement prediction
         [z_pred, H] = measurementModel(x_pred);
+        z_pred = min(z_pred, max_range);  % clamp overly long predictions
+
         z_meas = [tof_right(k); tof_front(k); tof_left(k)];
+         
     
         % Kalman update
         innovation = z_meas - z_pred;
@@ -121,17 +126,19 @@ function [X_Est, P_Est, GT, gyro_z] = myEKF_nomag(out, q, r, plt)
         P_Est{k+1} = P_upd;
     
         % ===== DEBUGGING OUTPUT =====
-        if mod(k,50) == 0
-            fprintf('\n--- EKF Step %d ---\n', k);
-            fprintf('Innovation (z_meas - z_pred):\n'); disp(innovation');
-            fprintf('Kalman Gain K (rows for x, y, psi):\n');
-            disp(K([1,2,5], :));  % focus on position and yaw
-            fprintf('Updated yaw estimate: %.3f rad\n', x_upd(5));
-            disp("z_meas (actual ToF readings):");
-            disp(z_meas');
+        if mod(k,150) == 0
+            %fprintf('\n--- EKF Step %d ---\n', k);
+            %fprintf('Innovation (z_meas - z_pred):\n'); disp(innovation');
+            %fprintf('Kalman Gain K (rows for x, y, psi):\n');
+            %disp(K([1,2,5], :));  % focus on position and yaw
+            %fprintf('Updated yaw estimate: %.3f rad\n', x_upd(5));
+            %disp("z_meas (actual ToF readings):");
+            %disp(z_meas');
             
-            disp("z_pred (predicted ToF readings):");
-            disp(z_pred');
+            %disp("z_pred (predicted ToF readings):");
+            %disp(z_pred');
+            %fprintf("Step %d: x=%.2f y=%.2f yaw=%.2f\n", k, x_pred(1), x_pred(2), x_pred(5));
+
 
         end
     
@@ -209,60 +216,68 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyroz, dt)
     F(4,5) =  dt * ( a_x * cos(psi) - a_y * sin(psi) );
 end
 
-%% === 5D Measurement Model Function ===
 function [z_pred, H] = measurementModel(x)
-    % In this new measurement model we assume that the state’s yaw
-    % is defined from the +X axis (i.e. when psi=0, the vehicle is heading
-    % in the +X direction). Accordingly, the sensor definitions are modified:
-    %
-    %   - The front sensor now “sees” a wall fixed at x = x_front.
-    %   - The left sensor, mounted to the left of the vehicle (i.e. at psi+pi/2),
-    %     sees a wall fixed at y = y_left.
-    %   - The right sensor, mounted to the right (at psi–pi/2), sees a wall at y = y_right.
-    
-    % Define wall positions (in world coordinates)
-    x_front = 1.2;   % Front wall is at x = 1.2 (in front of vehicle when heading +X)
+    % Define wall positions (in meters)
+    x_front = 1.2;   % Front wall is at x = 1.2 (in front of the vehicle)
     y_left  = 1.2;   % Left wall is at y = 1.2
     y_right = -1.2;  % Right wall is at y = -1.2
-    
-    % Extract state variables.
+
+    % Extract the necessary state variables
     x_pos = x(1);
     y_pos = x(2);
-    psi   = x(5);   % psi in new convention.
-    
-    % To avoid division by (near) zero, define a safe version of cos(psi)
+    psi   = x(5);    % yaw angle measured from +world-x
+
+    % For robustness, define a safe version of cosine (to avoid division by zero)
     epsilon = 1e-4;
     cos_psi = cos(psi);
     safe_cos = sign(cos_psi) * max(abs(cos_psi), epsilon);
-    
-    % Compute predicted distances along the sensor rays.
-    % Front sensor (points in the direction psi, intercepting vertical wall at x = x_front)
+
+    % --- Compute predicted distances for each sensor ---
+    % Front Sensor:
+    % The sensor ray points in the vehicle heading (psi).
+    % Intersection with the wall at x = +1.2:
     t_front = (x_front - x_pos) / safe_cos;
-    % Left sensor (points in the direction psi+pi/2; for a horizontal wall at y = y_left,
-    % note sin(psi+pi/2)=cos(psi) so we also use safe_cos)
+
+    % Left Sensor:
+    % For the sensor oriented at psi+pi/2 the effective cosine is given by
+    % sin(psi+pi/2)=cos(psi). Since the left wall is at y = +1.2,
+    % the distance is computed as:
     t_left = (y_left - y_pos) / safe_cos;
-    % Right sensor (points in the direction psi–pi/2; here sin(psi–pi/2) = -cos(psi))
+
+    % Right Sensor:
+    % For the sensor oriented at psi-pi/2, note that sin(psi-pi/2) = -cos(psi).
+    % The right wall is at y = -1.2, so:
     t_right = (y_pos - y_right) / safe_cos;
+    % Alternatively, if you wish to keep the sign conventions consistent, you 
+    % could use an additional negative sign in the denominator (or adjust the sensor 
+    % measurement interpretation) but here we assume the sensor reports a positive distance.
+
+    % Assemble the predicted measurement vector:
+    % Order: [Front; Right; Left]
+    z_pred = [t_front; t_right; t_left];
+
+    % --- Compute the Jacobian H ---
+    % H will be a (3x5) matrix. Only states x, y, and psi affect the measurements.
+    H = zeros(3, 5);
+
+    % For the Front Sensor:
+    %   t_front = (x_front - x_pos) / cos(psi)
+    H(1, 1) = -1 / safe_cos;                         % dt_front/dx
+    % dt_front/dpsi: differentiate [ (x_front - x_pos)/cos(psi) ]
+    H(1, 5) = (x_front - x_pos) * sin(psi) / (safe_cos^2); 
+    % Derivatives with respect to y, vx, vy remain zero.
+
+    % For the Right Sensor:
+    %   t_right = (y_pos - y_right) / cos(psi)
+    H(2, 2) = 1 / safe_cos;                          % dt_right/dy
+    % dt_right/dpsi: differentiate [ (y_pos - y_right)/cos(psi) ]
+    H(2, 5) = - (y_pos - y_right) * sin(psi) / (safe_cos^2);
+
+    % For the Left Sensor:
+    %   t_left = (y_left - y_pos) / cos(psi)
+    H(3, 2) = -1 / safe_cos;                         % dt_left/dy
+    % dt_left/dpsi:
+    H(3, 5) = (y_left - y_pos) * sin(psi) / (safe_cos^2);
     
-    % Arrange predicted measurements in the same order as the sensor data:
-    % [Right sensor; Front sensor; Left sensor]
-    z_pred = [t_right; t_front; t_left];
-    
-    % Now compute the measurement Jacobian H.
-    % For the front sensor: t_front = (x_front - x_pos) / cos(psi)
-    H = zeros(3,5);
-    % Partial derivatives with respect to x_pos (only appears in numerator)
-    H(2,1) = -1/safe_cos;
-    % With respect to psi, differentiate 1/cos(psi): d/dpsi[1/cos(psi)] = sin(psi)/cos(psi)^2.
-    H(2,5) = -(x_front - x_pos) * sin(psi) / (safe_cos^2);
-    
-    % For the left sensor: t_left = (y_left - y_pos) / cos(psi)
-    H(3,2) = -1/safe_cos;
-    H(3,5) = -(y_left - y_pos) * sin(psi) / (safe_cos^2);
-    
-    % For the right sensor: t_right = (y_pos - y_right) / cos(psi)
-    H(1,2) = 1/safe_cos;  % note the sign reversal compared to the left sensor.
-    H(1,5) = -(y_pos - y_right) * sin(psi) / (safe_cos^2);
-    
-    % The other derivatives (with respect to vx and vy) remain zero.
+    % The partial derivatives with respect to the velocity states (columns 3 and 4) are zero.
 end
