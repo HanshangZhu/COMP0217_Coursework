@@ -140,21 +140,12 @@ end
     end
 end
 function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
-    x   = xk(1);
-    y   = xk(2);
-    vx  = xk(3);
-    vy  = xk(4);
-    psi = xk(5);
-    
-    % Accelerometer in body frame
-    a_x = accel(1);
-    a_y = accel(2);
-    R_bw = [cos(psi),-sin(psi);sin(psi),cos(psi)];
+    x = xk(1); y = xk(2); vx = xk(3); vy = xk(4); psi = xk(5);
+    a_x = accel(1); a_y = accel(2);
+    % Adjusted rotation matrix
+    R_bw = [-sin(psi), -cos(psi); cos(psi), -sin(psi)];
     a_world = R_bw * [a_x; a_y];
-    
-    a_wx = a_world(1);
-    a_wy = a_world(2);
-    gyZ = gyro;
+    a_wx = a_world(1); a_wy = a_world(2); gyZ = gyro;
 
     x_pred = zeros(5,1);
     x_pred(1) = x + vx*dt + 0.5*a_wx*dt^2;
@@ -164,14 +155,12 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     x_pred(5) = psi + gyZ*dt;
 
     F = eye(5);
-    F(1,3) = dt;
-    F(2,4) = dt;
-
-    % NEW: Derivatives due to yaw rotation
-    F(1,5) = -0.5 * dt^2 * (a_x * sin(psi) + a_y * cos(psi));
-    F(2,5) =  0.5 * dt^2 * (a_x * cos(psi) - a_y * sin(psi));
-    F(3,5) = -dt * (a_x * sin(psi) + a_y * cos(psi));
-    F(4,5) =  dt * (a_x * cos(psi) - a_y * sin(psi));
+    F(1,3) = dt; F(2,4) = dt;
+    % Update Jacobian terms
+    F(1,5) = -0.5 * dt^2 * (a_x * cos(psi) - a_y * sin(psi));
+    F(2,5) = -0.5 * dt^2 * (a_x * sin(psi) + a_y * cos(psi));
+    F(3,5) = -dt * (a_x * cos(psi) - a_y * sin(psi));
+    F(4,5) = -dt * (a_x * sin(psi) + a_y * cos(psi));
 end
 
 function [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, z_pred, H, R)
@@ -212,44 +201,37 @@ function val = ternary(cond, a, b)
 end
 
 function [z_pred, H] = measurementModel(x)
-    % Extract state
-    x_pos = x(1); y_pos = x(2); theta = x(5);
-    epsilon = 1e-4;
-
-    % Wall boundaries
+    x_pos = x(1); y_pos = x(2); theta = x(5); epsilon = 1e-4;
     x_max = 1.2; x_min = -1.2; y_max = 1.2; y_min = -1.2;
+    z_pred = zeros(3,1); H = zeros(3,5);
 
-    % Initialize outputs
-    z_pred = zeros(3,1);
-    H = zeros(3,5);
-
-    % Right sensor (theta)
-    theta_right = theta;
-    dx_right = cos(theta_right); % x-component of direction
+    % Right sensor
+    theta_right = theta + pi/2;
+    dx_right = cos(theta_right);
     safe_dx_right = sign(dx_right) * max(abs(dx_right), epsilon);
-    x_wall_right = x_max * (dx_right >= 0) + x_min * (dx_right < 0);
+    x_wall_right = ternary(dx_right >= 0, x_max, x_min);
     t_right = (x_wall_right - x_pos) / safe_dx_right;
     z_pred(1) = t_right;
     H(1,1) = -1 / safe_dx_right;
-    H(1,5) = (x_wall_right - x_pos) * sin(theta_right) / (safe_dx_right^2); % d(t)/dtheta
+    H(1,5) = (x_wall_right - x_pos) * sin(theta_right) / (safe_dx_right^2);
 
-    % Front sensor (theta + pi/2)
-    theta_front = theta + pi/2;
-    dy_front = sin(theta_front); % y-component = cos(theta)
+    % Front sensor
+    theta_front = theta + pi;
+    dy_front = sin(theta_front);
     safe_dy_front = sign(dy_front) * max(abs(dy_front), epsilon);
-    y_wall_front = y_max * (dy_front >= 0) + y_min * (dy_front < 0);
+    y_wall_front = ternary(dy_front >= 0, y_max, y_min);
     t_front = (y_wall_front - y_pos) / safe_dy_front;
     z_pred(2) = t_front;
     H(2,2) = -1 / safe_dy_front;
-    H(2,5) = (y_wall_front - y_pos) * (-sin(theta)) / (safe_dy_front^2); % d(t)/dtheta
+    H(2,5) = (y_wall_front - y_pos) * (-cos(theta)) / (safe_dy_front^2);
 
-    % Left sensor (theta + pi)
-    theta_left = theta + pi;
-    dx_left = cos(theta_left); % x-component = -cos(theta)
+    % Left sensor
+    theta_left = theta + 3*pi/2;
+    dx_left = cos(theta_left);
     safe_dx_left = sign(dx_left) * max(abs(dx_left), epsilon);
-    x_wall_left = x_max * (dx_left >= 0) + x_min * (dx_left < 0);
+    x_wall_left = ternary(dx_left >= 0, x_max, x_min);
     t_left = (x_wall_left - x_pos) / safe_dx_left;
     z_pred(3) = t_left;
     H(3,1) = -1 / safe_dx_left;
-    H(3,5) = (x_wall_left - x_pos) * sin(theta_left) / (safe_dx_left^2); % d(t)/dtheta
+    H(3,5) = (x_wall_left - x_pos) * sin(theta_left) / (safe_dx_left^2);
 end
