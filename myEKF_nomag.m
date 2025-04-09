@@ -49,6 +49,7 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
         hold off
         title('Smoothed fused Accel x/y');
         legend('y','x');
+        ylim([-1.5 ,1.5]);
 
         figure()
         plot(accel2_y) 
@@ -69,7 +70,7 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
         gyro_z = filtfilt(b, a, gyro(:,3));
     end
 
-    gyro_z = -gyro_z
+    gyro_z = -gyro_z;
     %gyro_z = -gyro(:,3)
 
     %% Debug: Plot filtered vs raw gyro yaw rate
