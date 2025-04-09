@@ -49,23 +49,33 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
         hold off
         title('Smoothed fused Accel x/y');
         legend('y','x');
+
+        figure()
+        plot(accel2_y) 
+        hold on 
+        plot(accel2_x)
+        hold off
+        title('OG Accel2 x/y');
+        legend('y','x')
+
        
     end
 
     %% Low-pass filter gyro yaw rate
-    filtgyro=0;
+    filtgyro=1;
     if filtgyro
-        order = 5; cutoff = 2;
+        order = 5; cutoff = 0.5;
         [b, a] = butter(order, cutoff / (104/2));
         gyro_z = filtfilt(b, a, gyro(:,3));
     end
-    gyro_z = -gyro(:,3)
-    %gyro(:,3) = gyro_z;  % Optional: replace raw gyro_z in original array if needed
+
+    gyro_z = -gyro_z
+    %gyro_z = -gyro(:,3)
 
     %% Debug: Plot filtered vs raw gyro yaw rate
     if plt && filtgyro
         figure;
-        plot(timeVec, gyro(:,3), 'b-', 'DisplayName', 'Raw Gyro Z'); hold on;
+        plot(timeVec, -gyro(:,3), 'b-', 'DisplayName', 'Raw Gyro Z'); hold on;
         plot(timeVec, gyro_z, 'r-', 'DisplayName', 'Filtered Gyro Z');
         legend();
         xlabel('Time [s]');
@@ -117,7 +127,7 @@ for k = 1:N-1
     P_Est{k+1} = P_upd;
 
     if mod(k,50) == 0
-        %fprintf('Step %d: Printing Q and R\n', k);
+        fprintf('Step %d:', k);
         %disp(Q);
         %disp(R_local);
         fprintf('z_pred:')
