@@ -53,13 +53,17 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
     end
 
     %% Low-pass filter gyro yaw rate
-    order = 5; cutoff = 2;
-    [b, a] = butter(order, cutoff / (104/2));
-    gyro_z = filtfilt(b, a, gyro(:,3));
+    filtgyro=0;
+    if filtgyro
+        order = 5; cutoff = 2;
+        [b, a] = butter(order, cutoff / (104/2));
+        gyro_z = filtfilt(b, a, gyro(:,3));
+    end
+    gyro_z = -gyro(:,3)
     %gyro(:,3) = gyro_z;  % Optional: replace raw gyro_z in original array if needed
 
     %% Debug: Plot filtered vs raw gyro yaw rate
-    if plt
+    if plt && filtgyro
         figure;
         plot(timeVec, gyro(:,3), 'b-', 'DisplayName', 'Raw Gyro Z'); hold on;
         plot(timeVec, gyro_z, 'r-', 'DisplayName', 'Filtered Gyro Z');
@@ -71,14 +75,15 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
     end
 
 
-    yawGT = quat2eul(rotQuat);
-    yawGT = yawGT(:,1) + pi;
+    GT_eul = quat2eul(rotQuat);
+    %yawGT = yawGT(:,1) + pi;
+    yawGT = GT_eul(:,1);
     GT = [GT, yawGT];
 
-    X_Est = zeros(N, 6);
+    X_Est = zeros(N, 5);
     P_Est = cell(N,1);
-    X_Est(1,:) = [pos(1,1), pos(1,2), 0, 0, yawGT(2), 0];
-    P_Est{1} = diag([0.001, 0.001, 0.05, 0.05, 0.001, 0.05]);
+    X_Est(1,:) = [pos(1,1), pos(1,2), 0, 0, yawGT(2)];
+    P_Est{1} = diag([0.001, 0.001, 0.05, 0.05, 0.001]);
     Q = q;
 
     RdiagBase = [ sensor_calibration.R_tof_left, ...
@@ -88,34 +93,41 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
 
     disp(Q)
     
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% UPDATE LOOP
-    for k = 1:N-1
-        dt = timeVec(k+1) - timeVec(k);
-        if dt <= 0, dt = 1e-2; end
+for k = 1:N-1
+    dt = timeVec(k+1) - timeVec(k);
+    if dt <= 0, dt = 1e-2; end
 
-        xk = X_Est(k,:)';
-        [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro_z(k), dt);
-        P_pred = F * P_Est{k} * F' + Q;
+    xk = X_Est(k,:)';
+    [x_pred, F] = predictionStepSymbolic(xk, accel_fused(k,:)', gyro_z(k), dt);
+    P_pred = F * P_Est{k} * F' + Q;
 
-        [z_meas, H] = measurementModelOptim(x_pred, ...
-                    tof_right(k), tof_front(k), tof_left(k));
-        R_local = diag(min(min([interpretToFStatus(tof_right_status(k)), ...
-                        interpretToFStatus(tof_front_status(k)), ...
-                        interpretToFStatus(tof_left_status(k))] .* (scaleFactors .* eye(3)*1000),0.1*scaleFactors),10) ); %manually disable the interpret status
+    % Compute predicted measurements and Jacobian with the new model
+    [z_pred, H] = measurementModel(x_pred);
 
-        [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, H, R_local);
-        X_Est(k+1,:) = x_upd';
-        P_Est{k+1} = P_upd;
+    % Define actual measurements from TOF sensors
+    z_meas = [tof_right(k); tof_front(k); tof_left(k)];
 
-        if mod(k,50) == 0
-            fprintf('Step %d: Printing Q and R\n', k);
-            disp(Q);
-            disp(R_local);
-            fprintf('Printing K:');
-            disp(K);
-        end
+    % Compute local measurement noise covariance (unchanged)
+    R_local = diag(scaleFactors);
+
+    % Update step with actual and predicted measurements
+    [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, z_pred, H, R_local);
+    X_Est(k+1,:) = x_upd';
+    P_Est{k+1} = P_upd;
+
+    if mod(k,50) == 0
+        %fprintf('Step %d: Printing Q and R\n', k);
+        %disp(Q);
+        %disp(R_local);
+        fprintf('z_pred:')
+        disp(z_pred)
+        fprintf('z_meas:')
+        disp(z_meas)
+        fprintf('Printing K:');
+        disp(K);
     end
+end
 
     err_x = X_Est(:,1) - GT(:,1);
     err_y = X_Est(:,2) - GT(:,2);
@@ -133,30 +145,27 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     vx  = xk(3);
     vy  = xk(4);
     psi = xk(5);
-    dpsi= xk(6);
     
     % Accelerometer in body frame
     a_x = accel(1);
     a_y = accel(2);
-    R_bw = [cos(psi), -sin(psi); sin(psi), cos(psi)];
+    R_bw = [cos(psi),-sin(psi);sin(psi),cos(psi)];
     a_world = R_bw * [a_x; a_y];
     
     a_wx = a_world(1);
     a_wy = a_world(2);
     gyZ = gyro;
 
-    x_pred = zeros(6,1);
+    x_pred = zeros(5,1);
     x_pred(1) = x + vx*dt + 0.5*a_wx*dt^2;
     x_pred(2) = y + vy*dt + 0.5*a_wy*dt^2;
     x_pred(3) = vx + a_wx*dt;
     x_pred(4) = vy + a_wy*dt;
-    x_pred(5) = psi + dpsi*dt;
-    x_pred(6) = gyZ;
+    x_pred(5) = psi + gyZ*dt;
 
-    F = eye(6);
+    F = eye(5);
     F(1,3) = dt;
     F(2,4) = dt;
-    F(5,6) = dt;
 
     % NEW: Derivatives due to yaw rotation
     F(1,5) = -0.5 * dt^2 * (a_x * sin(psi) + a_y * cos(psi));
@@ -165,62 +174,25 @@ function [x_pred, F] = predictionStepSymbolic(xk, accel, gyro, dt)
     F(4,5) =  dt * (a_x * cos(psi) - a_y * sin(psi));
 end
 
-
-function [z_meas, H] = measurementModelOptim(x_pred, d1, d2, d3)
-    psi = x_pred(5); x = x_pred(1); y = x_pred(2);
-    offsets = [-pi/2, 0, pi/2];
-    angles = psi + offsets;
-    d_pred = zeros(3,1);
-    H = zeros(3,6);
-    for i = 1:3
-        theta = angles(i);
-        [t, ~, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta);
-        d_pred(i) = t;
-        H(i,1) = dt_dx;
-        H(i,2) = dt_dy;
-        H(i,5) = dt_dpsi;
-    end
-    z_meas = [d1; d2; d3];
-end
-
-function [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, H, R)
-    x_est = x_pred(1); y_est = x_pred(2); psi_est = x_pred(5);
-    angles = psi_est + [-pi/2, 0, pi/2];
-    d_pred = arrayfun(@(a) rayBoxIntersection(x_est, y_est, a), angles);
-    z_pred = d_pred(:);
-
+function [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, z_pred, H, R)
+    % Compute innovation
     y_tilde = z_meas - z_pred;
+
+    % Innovation covariance
     S = H * P_pred * H' + R;
+
+    % Kalman gain
     K = P_pred * H' / S;
+
+    % Update state estimate
     x_upd = x_pred + K * y_tilde;
-    x_upd(5) = wrapToPi(x_upd(5));
+    x_upd(5) =(x_upd(5)); % Ensure yaw stays within [-pi, pi]
+
+    % Update covariance
     P_upd = (eye(length(x_pred)) - K * H) * P_pred;
 end
 
-function [t, branch, dt_dx, dt_dy, dt_dpsi] = rayBoxIntersection(x, y, theta)
-    x_left = -1.2; x_right = 1.2;
-    y_bottom = -1.2; y_top = 1.2;
-    cth = cos(theta); sth = sin(theta);
 
-    x_wall = ternary(cth > 0, x_right, ternary(cth < 0, x_left, NaN));
-    y_wall = ternary(sth > 0, y_top, ternary(sth < 0, y_bottom, NaN));
-
-    t_v = ternary(~isnan(x_wall) && abs(cth) > 1e-6, (x_wall - x)/cth, inf);
-    t_h = ternary(~isnan(y_wall) && abs(sth) > 1e-6, (y_wall - y)/sth, inf);
-
-    if t_v <= 0, t_v = inf; end
-    if t_h <= 0, t_h = inf; end
-
-    if t_v < t_h
-        t = t_v; branch = 1;
-        dt_dx = -1/cth; dt_dy = 0;
-        dt_dpsi = (x_wall - x) * sth / (cth^2);
-    else
-        t = t_h; branch = 2;
-        dt_dx = 0; dt_dy = -1/sth;
-        dt_dpsi = - (y_wall - y) * cth / (sth^2);
-    end
-end
 
 function scale = interpretToFStatus(statusVal)
     switch statusVal
@@ -237,4 +209,47 @@ function val = ternary(cond, a, b)
     else
         val = b;
     end
+end
+
+function [z_pred, H] = measurementModel(x)
+    % Extract state
+    x_pos = x(1); y_pos = x(2); theta = x(5);
+    epsilon = 1e-4;
+
+    % Wall boundaries
+    x_max = 1.2; x_min = -1.2; y_max = 1.2; y_min = -1.2;
+
+    % Initialize outputs
+    z_pred = zeros(3,1);
+    H = zeros(3,5);
+
+    % Right sensor (theta)
+    theta_right = theta;
+    dx_right = cos(theta_right); % x-component of direction
+    safe_dx_right = sign(dx_right) * max(abs(dx_right), epsilon);
+    x_wall_right = x_max * (dx_right >= 0) + x_min * (dx_right < 0);
+    t_right = (x_wall_right - x_pos) / safe_dx_right;
+    z_pred(1) = t_right;
+    H(1,1) = -1 / safe_dx_right;
+    H(1,5) = (x_wall_right - x_pos) * sin(theta_right) / (safe_dx_right^2); % d(t)/dtheta
+
+    % Front sensor (theta + pi/2)
+    theta_front = theta + pi/2;
+    dy_front = sin(theta_front); % y-component = cos(theta)
+    safe_dy_front = sign(dy_front) * max(abs(dy_front), epsilon);
+    y_wall_front = y_max * (dy_front >= 0) + y_min * (dy_front < 0);
+    t_front = (y_wall_front - y_pos) / safe_dy_front;
+    z_pred(2) = t_front;
+    H(2,2) = -1 / safe_dy_front;
+    H(2,5) = (y_wall_front - y_pos) * (-sin(theta)) / (safe_dy_front^2); % d(t)/dtheta
+
+    % Left sensor (theta + pi)
+    theta_left = theta + pi;
+    dx_left = cos(theta_left); % x-component = -cos(theta)
+    safe_dx_left = sign(dx_left) * max(abs(dx_left), epsilon);
+    x_wall_left = x_max * (dx_left >= 0) + x_min * (dx_left < 0);
+    t_left = (x_wall_left - x_pos) / safe_dx_left;
+    z_pred(3) = t_left;
+    H(3,1) = -1 / safe_dx_left;
+    H(3,5) = (x_wall_left - x_pos) * sin(theta_left) / (safe_dx_left^2); % d(t)/dtheta
 end
