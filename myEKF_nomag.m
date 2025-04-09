@@ -82,7 +82,7 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
 
     X_Est = zeros(N, 5);
     P_Est = cell(N,1);
-    X_Est(1,:) = [pos(1,1), pos(1,2), 0, 0, yawGT(2)];
+    X_Est(1,:) = [pos(1,1), pos(1,2), 0, 0, yawGT(2)]; % convert yaw at 0 rads to relative to y axis
     P_Est{1} = diag([0.001, 0.001, 0.05, 0.05, 0.001]);
     Q = q;
 
