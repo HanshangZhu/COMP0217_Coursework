@@ -65,9 +65,9 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
     %% Low-pass filter gyro yaw rate
     filtgyro=1;
     if filtgyro
-        order = 5; cutoff = 0.5;
+        order = 5; cutoff = 0.1;
         [b, a] = butter(order, cutoff / (104/2));
-        gyro_z = filtfilt(b, a, gyro(:,3));
+        gyro_z = filtfilt(b, a,gyro(:,3));
     end
 
     gyro_z = -gyro_z;
@@ -186,7 +186,7 @@ function [x_upd, P_upd, K] = updateStep(x_pred, P_pred, z_meas, z_pred, H, R)
 
     % Update state estimate
     x_upd = x_pred + K * y_tilde;
-    x_upd(5) =(x_upd(5)); % Ensure yaw stays within [-pi, pi]
+    x_upd(5) =wrapToPi(x_upd(5)); % Ensure yaw stays within [-pi, pi]
 
     % Update covariance
     P_upd = (eye(length(x_pred)) - K * H) * P_pred;
