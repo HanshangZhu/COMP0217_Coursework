@@ -29,7 +29,7 @@ function [X_Est, P_Est, GT , gyro_z] = myEKF_nomag(out, q, r,plt)
     gyro  = gyro - sensor_calibration.gyro_bias;
     accel2 = accel2 - sensor_calibration.accel2_bias;
 
-    fs1 = 104; fs2 = 100; fc = 0.5; order=2;
+    fs1 = 104; fs2 = 100; fc = 0.4; order=5;
     [b1, a1] = butter(order, fc/(fs1/2));
     [b2, a2] = butter(order, fc/(fs2/2));
     accel1_x = filtfilt(b1, a1, accel(:,1));
@@ -246,3 +246,4 @@ function [z_pred, H] = measurementModel(x)
     H(3,1) = -1 / safe_dx_left;
     H(3,5) = (x_wall_left - x_pos) * sin(theta_left) / (safe_dx_left^2);
 end
+
